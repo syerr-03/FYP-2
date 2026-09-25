@@ -1,0 +1,181 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+body {
+  margin: 0;
+  background: #f7f7f8;
+}
+
+.login-page {
+  min-height: 100vh;
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  padding: 30px;
+}
+
+.login-card {
+  width: 100%;
+  max-width: 950px;
+  min-height: 540px;
+
+  display: flex;
+
+  background: white;
+
+  border-radius: 22px;
+  overflow: hidden;
+
+  box-shadow: 0 18px 45px rgba(0, 0, 0, 0.12);
+}
+
+/* LEFT SIDE */
+
+.login-left {
+  width: 50%;
+
+  background: #d63384;
+  color: white;
+
+  padding: 70px 55px;
+
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.login-left h1 {
+  font-size: 38px;
+  margin-bottom: 8px;
+}
+
+.login-left h2 {
+  font-size: 28px;
+  font-weight: 500;
+  margin-bottom: 30px;
+}
+
+.login-left p {
+  font-size: 16px;
+  line-height: 1.8;
+  opacity: 0.95;
+}
+
+/* RIGHT SIDE */
+
+.login-right {
+  width: 50%;
+
+  padding: 70px 55px;
+
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.login-right h2 {
+  font-size: 30px;
+  color: #1f2937;
+  margin-bottom: 8px;
+}
+
+.subtitle {
+  color: #777;
+  margin-bottom: 30px;
+}
+
+label {
+  font-size: 14px;
+  font-weight: 600;
+
+  color: #333;
+
+  margin-bottom: 8px;
+}
+
+input {
+  width: 100%;
+  padding: 14px 15px;
+
+  border: 1px solid #dcdcdc;
+  border-radius: 9px;
+
+  margin-bottom: 20px;
+
+  font-size: 14px;
+
+  outline: none;
+}
+
+input:focus {
+  border-color: #d63384;
+  box-shadow: 0 0 0 3px rgba(214, 51, 132, 0.12);
+}
+
+button {
+  width: 100%;
+
+  padding: 14px;
+
+  border: none;
+  border-radius: 9px;
+
+  background: #d63384;
+  color: white;
+
+  font-size: 16px;
+  font-weight: 600;
+
+  cursor: pointer;
+
+  transition: 0.2s;
+}
+
+button:hover {
+  background: #b92b70;
+}
+
+.footer {
+  margin-top: 28px;
+
+  text-align: center;
+
+  font-size: 12px;
+  color: #999;
+}
+
+/* RESPONSIVE */
+
+@media (max-width: 768px) {
+
+  .login-card {
+    flex-direction: column;
+  }
+
+  .login-left,
+  .login-right {
+    width: 100%;
+  }
+
+  .login-left {
+    padding: 45px 35px;
+  }
+
+  .login-right {
+    padding: 45px 35px;
+  }
+}
+
+.login-message {
+  margin-top: 18px;
+  text-align: center;
+  font-size: 14px;
+  font-weight: 600;
+  color: #d63384;
+}
