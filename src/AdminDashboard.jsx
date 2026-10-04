@@ -8,6 +8,15 @@ function AdminDashboard({ onLogout }) {
   const [forecastMonths, setForecastMonths] = useState(3);
   const [forecastStart, setForecastStart] = useState("");
   const [forecastEnd, setForecastEnd] = useState("");
+  
+  const formatForecastDate = (dateString) => {
+    if (!dateString) return "";
+
+    return new Date(`${dateString}T00:00:00`).toLocaleDateString("en-US", {
+      month: "short",
+      year: "numeric",
+    });
+  };
 
   useEffect(() => {
     setForecastLoading(true);
@@ -1724,37 +1733,55 @@ function AdminDashboard({ onLogout }) {
 
               <div className="forecast-summary-card">
                 <p>Forecast Period</p>
-                <h2>12 Months</h2>
-                <span className="normal">
-                  January - December 2026
+
+                <div className="forecast-period-row">
+                  <h2>{forecastMonths} Months</h2>
+
+                  <select
+                    value={forecastMonths}
+                    onChange={(e) =>
+                      setForecastMonths(Number(e.target.value))
+                    }
+                    className="forecast-period-select"
+                  >
+                    <option value={1}>1 Month</option>
+                    <option value={3}>3 Months</option>
+                    <option value={6}>6 Months</option>
+                    <option value={12}>12 Months</option>
+                  </select>
+                </div>
+
+                <span className={forecastLoading ? "forecast-loading" : "normal"}>
+                  {forecastLoading
+                    ? "Loading forecast..."
+                    : forecastStart && forecastEnd
+                    ? `${forecastStart} - ${forecastEnd}`
+                    : ""}
                 </span>
               </div>
 
+
               <div className="forecast-summary-card">
                 <p>High Demand Products</p>
-                <h2>
-                  {forecastLoading ? "..." : highDemandCount}
-                </h2>
+                <h2>{highDemandCount}</h2>
                 <span className="danger">
                   Predicted ≥ 1,000 units
                 </span>
               </div>
 
+
               <div className="forecast-summary-card">
                 <p>Medium Demand Products</p>
-                <h2>
-                  {forecastLoading ? "..." : mediumDemandCount}
-                </h2>
+                <h2>{mediumDemandCount}</h2>
                 <span className="normal">
                   Predicted 300 - 999 units
                 </span>
               </div>
 
+
               <div className="forecast-summary-card">
                 <p>Low Demand Products</p>
-                <h2>
-                  {forecastLoading ? "..." : lowDemandCount}
-                </h2>
+                <h2>{lowDemandCount}</h2>
                 <span className="warning">
                   Predicted below 300 units
                 </span>
@@ -1762,7 +1789,7 @@ function AdminDashboard({ onLogout }) {
 
             </div>
 
-
+            
             {/* FORECAST CHART + INSIGHTS */}
 
             <div className="dashboard-grid">
@@ -1850,7 +1877,11 @@ function AdminDashboard({ onLogout }) {
                   <h3>Product Demand Forecast</h3>
 
                   <p className="forecast-subtitle">
-                    Predicted annual demand for each product in 2026
+                    {forecastStart && forecastEnd
+                      ? `Predicted demand for each product from ${formatForecastDate(
+                          forecastStart
+                        )} to ${formatForecastDate(forecastEnd)}`
+                      : "Predicted product demand forecast"}
                   </p>
                 </div>
               </div>
@@ -1927,8 +1958,10 @@ function AdminDashboard({ onLogout }) {
                             </td>
 
                             <td>
-                              Jan - Dec 2026
-                            </td>
+                            {forecastStart && forecastEnd
+                              ? `${formatForecastDate(forecastStart)} - ${formatForecastDate(forecastEnd)}`
+                              : "-"}
+                          </td>
 
                           </tr>
                         );

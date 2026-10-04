@@ -4,21 +4,141 @@ import "./ManageDashboard.css";
 function ManageDashboard({ onLogout }) {
 
   const [activePage, setActivePage] = useState("dashboard");
+
   const [forecastData, setForecastData] = useState([]);
   const [forecastLoading, setForecastLoading] = useState(true);
 
+  const [forecastMonths, setForecastMonths] = useState(3);
+  const [forecastStart, setForecastStart] = useState("");
+  const [forecastEnd, setForecastEnd] = useState("");
+
+  const [selectedForecastProduct, setSelectedForecastProduct] =
+    useState("All Products");
+
+
+  const formatForecastDate = (dateString) => {
+    if (!dateString) return "";
+
+    return new Date(`${dateString}T00:00:00`).toLocaleDateString("en-US", {
+      month: "short",
+      year: "numeric",
+    });
+  };
+
+
+  const forecastProducts = [
+    "All Products",
+    ...Array.from(
+      new Set(
+        forecastData.map((item) => item.Product_Code)
+      )
+    ),
+  ];
+
+
+  const filteredForecastData =
+    selectedForecastProduct === "All Products"
+      ? forecastData
+      : forecastData.filter(
+          (item) =>
+            item.Product_Code === selectedForecastProduct
+        );
+
+
+  const forecastSummary = Object.values(
+    filteredForecastData.reduce((acc, item) => {
+      const code = item.Product_Code;
+      const qty = Number(item.Predicted_Quantity) || 0;
+
+      if (!acc[code]) {
+        acc[code] = {
+          Product_Code: code,
+          Predicted_Quantity: 0,
+        };
+      }
+
+      acc[code].Predicted_Quantity += qty;
+
+      return acc;
+    }, {})
+  ).sort(
+    (a, b) =>
+      b.Predicted_Quantity - a.Predicted_Quantity
+  );
+
+
+  const getDemandCategory = (qty) => {
+    if (qty >= 1000) return "High";
+    if (qty >= 300) return "Medium";
+    return "Low";
+  };
+
+
+  const highDemandCount = forecastSummary.filter(
+    (item) => item.Predicted_Quantity >= 1000
+  ).length;
+
+  const mediumDemandCount = forecastSummary.filter(
+    (item) =>
+      item.Predicted_Quantity >= 300 &&
+      item.Predicted_Quantity < 1000
+  ).length;
+
+  const lowDemandCount = forecastSummary.filter(
+    (item) => item.Predicted_Quantity < 300
+  ).length;
+
+
+  const highestDemandProduct = forecastSummary[0];
+
+  const topProducts = forecastSummary.slice(0, 10);
+
+
+  const monthlyForecast = Object.values(
+    filteredForecastData.reduce((acc, item) => {
+      const date = item.Date;
+      const qty = Number(item.Predicted_Quantity) || 0;
+
+      if (!acc[date]) {
+        acc[date] = {
+          Date: date,
+          Predicted_Quantity: 0,
+        };
+      }
+
+      acc[date].Predicted_Quantity += qty;
+
+      return acc;
+    }, {})
+  ).sort(
+    (a, b) =>
+      new Date(a.Date) - new Date(b.Date)
+  );
+
+
+  const maxMonthlyDemand = Math.max(
+    ...monthlyForecast.map(
+      (item) => item.Predicted_Quantity
+    ),
+    1
+  );
+
   useEffect(() => {
-    fetch("http://127.0.0.1:5000/forecast")
+    setForecastLoading(true);
+
+    fetch(`http://127.0.0.1:5000/predict-demand?months=${forecastMonths}`)
       .then((response) => response.json())
-      .then((data) => {
-        setForecastData(data);
+      .then((result) => {
+        setForecastData(result.data || []);
+        setForecastStart(result.forecast_start || "");
+        setForecastEnd(result.forecast_end || "");
         setForecastLoading(false);
       })
       .catch((error) => {
         console.error("Error fetching forecast:", error);
         setForecastLoading(false);
       });
-  }, []);
+  }, [forecastMonths]);
 
   return (
     <div className="management-layout">
@@ -867,13 +987,35 @@ function ManageDashboard({ onLogout }) {
                 <option>Last 3 Months</option>
                 </select>
 
-                <select>
-                <option>All Products</option>
-                <option>Product AA</option>
-                <option>Serum A</option>
-                <option>Cleanser B</option>
-                <option>Toner E</option>
+                <div className="management-forecast-filters">
+
+                <select
+                  value={forecastMonths}
+                  onChange={(e) =>
+                    setForecastMonths(Number(e.target.value))
+                  }
+                >
+                  <option value={1}>Next 1 Month</option>
+                  <option value={3}>Next 3 Months</option>
+                  <option value={6}>Next 6 Months</option>
+                  <option value={12}>Next 12 Months</option>
                 </select>
+
+
+                <select
+                  value={selectedForecastProduct}
+                  onChange={(e) =>
+                    setSelectedForecastProduct(e.target.value)
+                  }
+                >
+                  {forecastProducts.map((product) => (
+                    <option key={product} value={product}>
+                      {product}
+                    </option>
+                  ))}
+                </select>
+
+              </div>
 
             </div>
 
@@ -1596,19 +1738,30 @@ function ManageDashboard({ onLogout }) {
 
       <div className="management-forecast-filters">
 
-        <select>
-          <option>Next Month</option>
-          <option>Next 3 Months</option>
-          <option>Next 6 Months</option>
+        <select
+          value={forecastMonths}
+          onChange={(e) =>
+            setForecastMonths(Number(e.target.value))
+          }
+        >
+          <option value={1}>Next 1 Month</option>
+          <option value={3}>Next 3 Months</option>
+          <option value={6}>Next 6 Months</option>
+          <option value={12}>Next 12 Months</option>
         </select>
 
 
-        <select>
-          <option>All Products</option>
-          <option>Product AA</option>
-          <option>Serum A</option>
-          <option>Cleanser B</option>
-          <option>Toner E</option>
+        <select
+          value={selectedForecastProduct}
+          onChange={(e) =>
+            setSelectedForecastProduct(e.target.value)
+          }
+        >
+          {forecastProducts.map((product) => (
+            <option key={product} value={product}>
+              {product}
+            </option>
+          ))}
         </select>
 
       </div>
@@ -1624,40 +1777,72 @@ function ManageDashboard({ onLogout }) {
 
       <div className="management-card">
         <p>Forecasted Demand</p>
-        <h2>1,420</h2>
+
+        <h2>
+          {forecastLoading
+            ? "..."
+            : Math.round(
+                forecastSummary.reduce(
+                  (sum, item) =>
+                    sum + item.Predicted_Quantity,
+                  0
+                )
+              ).toLocaleString()}
+        </h2>
 
         <span className="management-green">
-          +13.8% expected
+          {forecastStart && forecastEnd
+            ? `${formatForecastDate(forecastStart)} - ${formatForecastDate(forecastEnd)}`
+            : "Forecast period"}
         </span>
       </div>
 
 
       <div className="management-card">
         <p>Highest Demand Product</p>
-        <h2>Product AA</h2>
+
+        <h2>
+          {forecastLoading
+            ? "..."
+            : highestDemandProduct?.Product_Code || "-"}
+        </h2>
 
         <span className="management-pink">
-          420 predicted orders
+          {highestDemandProduct
+            ? `${Math.round(
+                highestDemandProduct.Predicted_Quantity
+              ).toLocaleString()} predicted units`
+            : "No forecast data"}
         </span>
       </div>
 
 
       <div className="management-card">
-        <p>Products Increasing</p>
-        <h2>3</h2>
+        <p>High Demand Products</p>
+
+        <h2>
+          {forecastLoading
+            ? "..."
+            : highDemandCount}
+        </h2>
 
         <span className="management-yellow">
-          Demand trending upward
+          Predicted ≥ 1,000 units
         </span>
       </div>
 
 
       <div className="management-card">
-        <p>Forecast Confidence</p>
-        <h2>87%</h2>
+        <p>Low Demand Products</p>
+
+        <h2>
+          {forecastLoading
+            ? "..."
+            : lowDemandCount}
+        </h2>
 
         <span className="management-green">
-          High confidence
+          Predicted below 300 units
         </span>
       </div>
 
@@ -1675,104 +1860,48 @@ function ManageDashboard({ onLogout }) {
         <h3>Demand Forecast Trend</h3>
 
         <p className="management-section-subtitle">
-          Historical demand compared with predicted demand
+          Predicted demand from{" "}
+          {formatForecastDate(forecastStart)} to{" "}
+          {formatForecastDate(forecastEnd)}
         </p>
 
 
         <div className="management-forecast-chart">
 
-          <div className="management-forecast-bar-group">
+          {forecastLoading ? (
+            <p>Loading forecast...</p>
+          ) : (
+            monthlyForecast.map((item) => {
 
-            <div
-              className="management-forecast-actual"
-              style={{ height: "50%" }}
-            ></div>
+              const barHeight =
+                (item.Predicted_Quantity / maxMonthlyDemand) * 90;
 
-            <span>Apr</span>
+              return (
+                <div
+                  className="management-forecast-bar-group"
+                  key={item.Date}
+                >
 
-          </div>
+                  <div
+                    className="management-forecast-predicted"
+                    style={{
+                      height: `${Math.max(barHeight, 5)}%`,
+                    }}
+                  ></div>
 
+                  <span>
+                    {formatForecastDate(item.Date)}
+                  </span>
 
-          <div className="management-forecast-bar-group">
-
-            <div
-              className="management-forecast-actual"
-              style={{ height: "57%" }}
-            ></div>
-
-            <span>May</span>
-
-          </div>
-
-
-          <div className="management-forecast-bar-group">
-
-            <div
-              className="management-forecast-actual"
-              style={{ height: "62%" }}
-            ></div>
-
-            <span>Jun</span>
-
-          </div>
-
-
-          <div className="management-forecast-bar-group">
-
-            <div
-              className="management-forecast-actual"
-              style={{ height: "68%" }}
-            ></div>
-
-            <span>Jul</span>
-
-          </div>
-
-
-          <div className="management-forecast-bar-group">
-
-            <div
-              className="management-forecast-actual"
-              style={{ height: "74%" }}
-            ></div>
-
-            <span>Aug</span>
-
-          </div>
-
-
-          <div className="management-forecast-bar-group">
-
-            <div
-              className="management-forecast-actual"
-              style={{ height: "79%" }}
-            ></div>
-
-            <span>Sep</span>
-
-          </div>
-
-
-          <div className="management-forecast-bar-group">
-
-            <div
-              className="management-forecast-predicted"
-              style={{ height: "90%" }}
-            ></div>
-
-            <span>Oct</span>
-
-          </div>
+                </div>
+              );
+            })
+          )}
 
         </div>
 
 
         <div className="management-forecast-legend">
-
-          <div>
-            <span className="management-legend-actual"></span>
-            Historical Demand
-          </div>
 
           <div>
             <span className="management-legend-predicted"></span>
@@ -1792,64 +1921,43 @@ function ManageDashboard({ onLogout }) {
 
         <h3>Forecast Overview</h3>
 
-        <div className="management-forecast-overview-list">
+        {forecastLoading ? (
+          <p>Loading forecast overview...</p>
+        ) : (
+          topProducts.slice(0, 4).map((item) => {
 
-          <div className="management-forecast-overview-item">
+            const level = getDemandCategory(
+              item.Predicted_Quantity
+            );
 
-            <div>
-              <span>Product AA</span>
-              <strong>+24%</strong>
-            </div>
+            return (
+              <div
+                className="management-forecast-overview-item"
+                key={item.Product_Code}
+              >
 
-            <p>
-              Strong demand increase expected next month.
-            </p>
+                <div>
+                  <span>{item.Product_Code}</span>
 
-          </div>
+                  <strong>
+                    {Math.round(
+                      item.Predicted_Quantity
+                    ).toLocaleString()} units
+                  </strong>
+                </div>
 
+                <p>
+                  {level === "High"
+                    ? "High demand is predicted for the selected forecast period."
+                    : level === "Medium"
+                    ? "Moderate demand is predicted for the selected forecast period."
+                    : "Low demand is predicted for the selected forecast period."}
+                </p>
 
-          <div className="management-forecast-overview-item">
-
-            <div>
-              <span>Serum A</span>
-              <strong>+11%</strong>
-            </div>
-
-            <p>
-              Moderate increase in customer demand.
-            </p>
-
-          </div>
-
-
-          <div className="management-forecast-overview-item">
-
-            <div>
-              <span>Cleanser B</span>
-              <strong>+5%</strong>
-            </div>
-
-            <p>
-              Demand expected to remain relatively stable.
-            </p>
-
-          </div>
-
-
-          <div className="management-forecast-overview-item">
-
-            <div>
-              <span>Toner E</span>
-              <strong>-3%</strong>
-            </div>
-
-            <p>
-              Slight decrease in demand is predicted.
-            </p>
-
-          </div>
-
-        </div>
+              </div>
+            );
+          })
+        )}
 
       </div>
 
@@ -1880,79 +1988,81 @@ function ManageDashboard({ onLogout }) {
         <thead>
           <tr>
             <th>Product</th>
-            <th>Current Demand</th>
             <th>Predicted Demand</th>
-            <th>Change</th>
-            <th>Trend</th>
-            <th>Confidence</th>
+            <th>Demand Level</th>
+            <th>Forecast Period</th>
           </tr>
         </thead>
 
 
         <tbody>
 
-          <tr>
-            <td>Product AA</td>
-            <td>340</td>
-            <td>420</td>
-            <td>+23.5%</td>
+          {forecastLoading ? (
 
-            <td>
-              <span className="management-status management-red-status">
-                Increasing
-              </span>
-            </td>
+            <tr>
+              <td colSpan="4">
+                Loading forecast data...
+              </td>
+            </tr>
 
-            <td>91%</td>
-          </tr>
+          ) : topProducts.length === 0 ? (
 
+            <tr>
+              <td colSpan="4">
+                No forecast data available.
+              </td>
+            </tr>
 
-          <tr>
-            <td>Serum A</td>
-            <td>315</td>
-            <td>350</td>
-            <td>+11.1%</td>
+          ) : (
 
-            <td>
-              <span className="management-status management-yellow-status">
-                Increasing
-              </span>
-            </td>
+            topProducts.map((item) => {
 
-            <td>88%</td>
-          </tr>
+              const level = getDemandCategory(
+                item.Predicted_Quantity
+              );
 
+              let statusClass = "management-yellow-status";
 
-          <tr>
-            <td>Cleanser B</td>
-            <td>287</td>
-            <td>302</td>
-            <td>+5.2%</td>
+              if (level === "High") {
+                statusClass = "management-red-status";
+              }
 
-            <td>
-              <span className="management-status management-green-status">
-                Stable
-              </span>
-            </td>
+              if (level === "Low") {
+                statusClass = "management-green-status";
+              }
 
-            <td>85%</td>
-          </tr>
+              return (
+                <tr key={item.Product_Code}>
 
+                  <td>
+                    {item.Product_Code}
+                  </td>
 
-          <tr>
-            <td>Toner E</td>
-            <td>306</td>
-            <td>296</td>
-            <td>-3.3%</td>
+                  <td>
+                    {Math.round(
+                      item.Predicted_Quantity
+                    ).toLocaleString()} units
+                  </td>
 
-            <td>
-              <span className="management-status management-blue-status">
-                Decreasing
-              </span>
-            </td>
+                  <td>
+                    <span
+                      className={`management-status ${statusClass}`}
+                    >
+                      {level}
+                    </span>
+                  </td>
 
-            <td>84%</td>
-          </tr>
+                  <td>
+                    {forecastStart && forecastEnd
+                      ? `${formatForecastDate(forecastStart)} - ${formatForecastDate(forecastEnd)}`
+                      : "-"}
+                  </td>
+
+                </tr>
+              );
+            })
+
+          )}
 
         </tbody>
 
@@ -1984,12 +2094,18 @@ function ManageDashboard({ onLogout }) {
 
         <div className="management-demand-insight-card">
 
-          <span>Highest Growth</span>
+          <span>Highest Demand</span>
 
-          <strong>Product AA</strong>
+          <strong>
+            {highestDemandProduct?.Product_Code || "-"}
+          </strong>
 
           <p>
-            Predicted demand is expected to increase by approximately 23.5%.
+            {highestDemandProduct
+              ? `${Math.round(
+                  highestDemandProduct.Predicted_Quantity
+                ).toLocaleString()} units are predicted for the selected forecast period.`
+              : "No forecast data available."}
           </p>
 
         </div>
@@ -1997,12 +2113,14 @@ function ManageDashboard({ onLogout }) {
 
         <div className="management-demand-insight-card">
 
-          <span>Most Stable</span>
+          <span>High Demand Products</span>
 
-          <strong>Cleanser B</strong>
+          <strong>
+            {highDemandCount}
+          </strong>
 
           <p>
-            Demand is expected to remain relatively consistent.
+            Products predicted to reach 1,000 units or more during the selected forecast period.
           </p>
 
         </div>
@@ -2010,12 +2128,14 @@ function ManageDashboard({ onLogout }) {
 
         <div className="management-demand-insight-card">
 
-          <span>Demand Decline</span>
+          <span>Low Demand Products</span>
 
-          <strong>Toner E</strong>
+          <strong>
+            {lowDemandCount}
+          </strong>
 
           <p>
-            A small reduction in demand is predicted for the next period.
+            Products predicted to remain below 300 units during the selected forecast period.
           </p>
 
         </div>

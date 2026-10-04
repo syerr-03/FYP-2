@@ -1023,6 +1023,35 @@ th {
   }
 }
 
+.forecast-period-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.forecast-period-row h2 {
+  margin: 0;
+}
+
+.forecast-period-select {
+  padding: 5px 8px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  background: white;
+  font-size: 12px;
+  cursor: pointer;
+  outline: none;
+}
+
+.forecast-period-select:focus {
+  border-color: #d63384;
+}
+
+.forecast-loading {
+  color: #d63384;
+  font-weight: 600;
+}
+
 /* =========================
    CUSTOMER ANALYTICS
 ========================= */
