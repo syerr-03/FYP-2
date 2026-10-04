@@ -1,9 +1,24 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import "./ManageDashboard.css";
 
 function ManageDashboard({ onLogout }) {
 
   const [activePage, setActivePage] = useState("dashboard");
+  const [forecastData, setForecastData] = useState([]);
+  const [forecastLoading, setForecastLoading] = useState(true);
+
+  useEffect(() => {
+    fetch("http://127.0.0.1:5000/forecast")
+      .then((response) => response.json())
+      .then((data) => {
+        setForecastData(data);
+        setForecastLoading(false);
+      })
+      .catch((error) => {
+        console.error("Error fetching forecast:", error);
+        setForecastLoading(false);
+      });
+  }, []);
 
   return (
     <div className="management-layout">

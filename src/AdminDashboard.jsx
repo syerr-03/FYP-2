@@ -1,8 +1,103 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import "./AdminDashboard.css";
 
 function AdminDashboard({ onLogout }) {
   const [activePage, setActivePage] = useState("dashboard");
+  const [forecastData, setForecastData] = useState([]);
+  const [forecastLoading, setForecastLoading] = useState(true);
+  const [forecastMonths, setForecastMonths] = useState(3);
+  const [forecastStart, setForecastStart] = useState("");
+  const [forecastEnd, setForecastEnd] = useState("");
+
+  useEffect(() => {
+    setForecastLoading(true);
+
+    fetch(
+      `http://127.0.0.1:5000/predict-demand?months=${forecastMonths}`
+    )
+      .then((response) => response.json())
+      .then((result) => {
+        setForecastData(result.data || []);
+        setForecastStart(result.forecast_start || "");
+        setForecastEnd(result.forecast_end || "");
+        setForecastLoading(false);
+      })
+      .catch((error) => {
+        console.error("Error fetching forecast:", error);
+        setForecastLoading(false);
+      });
+
+}, [forecastMonths]);
+
+    const forecastSummary = Object.values(
+      forecastData.reduce((acc, item) => {
+        const code = item.Product_Code;
+        const qty = Number(item.Predicted_Quantity) || 0;
+
+        if (!acc[code]) {
+          acc[code] = {
+            Product_Code: code,
+            Predicted_Quantity: 0,
+          };
+        }
+
+        acc[code].Predicted_Quantity += qty;
+
+        return acc;
+      }, {})
+    ).sort(
+      (a, b) => b.Predicted_Quantity - a.Predicted_Quantity
+    );
+
+    const getDemandCategory = (qty) => {
+      if (qty >= 1000) return "High";
+      if (qty >= 300) return "Medium";
+      return "Low";
+    };
+
+    const highDemandCount = forecastSummary.filter(
+      (item) => item.Predicted_Quantity >= 1000
+    ).length;
+
+    const mediumDemandCount = forecastSummary.filter(
+      (item) =>
+        item.Predicted_Quantity >= 300 &&
+        item.Predicted_Quantity < 1000
+    ).length;
+
+    const lowDemandCount = forecastSummary.filter(
+      (item) => item.Predicted_Quantity < 300
+    ).length;
+
+    const highestDemandProduct = forecastSummary[0];
+    
+    const monthlyForecast = forecastData.reduce((acc, item) => {
+      const month = item.Month;
+      const qty = Number(item.Predicted_Quantity) || 0;
+
+      if (!acc[month]) {
+        acc[month] = 0;
+      }
+
+      acc[month] += qty;
+
+      return acc;
+    }, {});
+
+    const months = [
+      "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+      "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
+    ];
+
+    const maxMonthlyDemand = Math.max(
+      ...months.map((month) => monthlyForecast[month] || 0),
+      1
+    );
+
+    const topProducts = forecastSummary.slice(0, 10);
+
+    const highestMonthlyProduct =
+      highestDemandProduct?.Product_Code || "-";
 
   return (
     <div className="admin-layout">
@@ -1627,37 +1722,43 @@ function AdminDashboard({ onLogout }) {
 
             <div className="forecast-summary-grid">
 
-            <div className="forecast-summary-card">
+              <div className="forecast-summary-card">
                 <p>Forecast Period</p>
-                <h2>30 Days</h2>
+                <h2>12 Months</h2>
                 <span className="normal">
-                Upcoming demand
+                  January - December 2026
                 </span>
-            </div>
+              </div>
 
-            <div className="forecast-summary-card">
+              <div className="forecast-summary-card">
                 <p>High Demand Products</p>
-                <h2>6</h2>
+                <h2>
+                  {forecastLoading ? "..." : highDemandCount}
+                </h2>
                 <span className="danger">
-                Restock attention
+                  Predicted ≥ 1,000 units
                 </span>
-            </div>
+              </div>
 
-            <div className="forecast-summary-card">
-                <p>Stable Demand</p>
-                <h2>34</h2>
+              <div className="forecast-summary-card">
+                <p>Medium Demand Products</p>
+                <h2>
+                  {forecastLoading ? "..." : mediumDemandCount}
+                </h2>
                 <span className="normal">
-                Normal pattern
+                  Predicted 300 - 999 units
                 </span>
-            </div>
+              </div>
 
-            <div className="forecast-summary-card">
+              <div className="forecast-summary-card">
                 <p>Low Demand Products</p>
-                <h2>8</h2>
+                <h2>
+                  {forecastLoading ? "..." : lowDemandCount}
+                </h2>
                 <span className="warning">
-                Monitor sales trend
+                  Predicted below 300 units
                 </span>
-            </div>
+              </div>
 
             </div>
 
@@ -1666,65 +1767,76 @@ function AdminDashboard({ onLogout }) {
 
             <div className="dashboard-grid">
 
-            <div className="panel">
+              <div className="panel">
                 <h3>Predicted Demand Trend</h3>
 
                 <p className="forecast-chart-subtitle">
-                Historical vs predicted order demand
+                  Total predicted product demand by month for 2026
                 </p>
 
                 <div className="forecast-chart">
-                <div style={{ height: "40%" }}>
-                    <span>Jan</span>
-                </div>
+                  {months.map((month) => {
+                    const qty = monthlyForecast[month] || 0;
 
-                <div style={{ height: "48%" }}>
-                    <span>Feb</span>
-                </div>
+                    const height =
+                      maxMonthlyDemand > 0
+                        ? (qty / maxMonthlyDemand) * 100
+                        : 0;
 
-                <div style={{ height: "55%" }}>
-                    <span>Mar</span>
+                    return (
+                      <div
+                        key={month}
+                        style={{
+                          height: `${Math.max(height, 5)}%`
+                        }}
+                        title={`${month}: ${Math.round(qty)} units`}
+                      >
+                        <span>{month}</span>
+                      </div>
+                    );
+                  })}
                 </div>
-
-                <div style={{ height: "64%" }}>
-                    <span>Apr</span>
-                </div>
-
-                <div style={{ height: "76%" }}>
-                    <span>May</span>
-                </div>
-
-                <div style={{ height: "88%" }}>
-                    <span>Jun</span>
-                </div>
-                </div>
-            </div>
+              </div>
 
 
-            <div className="panel">
+              <div className="panel">
                 <h3>Forecast Insights</h3>
 
                 <div className="alert danger-alert">
-                <strong>High Demand Expected</strong>
-                <p>
-                    Serum A demand is predicted to increase next month.
-                </p>
+                  <strong>Highest Demand Product</strong>
+
+                  <p>
+                    {highestDemandProduct
+                      ? `${highestDemandProduct.Product_Code} is predicted to have the highest demand in 2026 with approximately ${Math.round(
+                          highestDemandProduct.Predicted_Quantity
+                        ).toLocaleString()} units.`
+                      : "Forecast data is loading."}
+                  </p>
                 </div>
+
 
                 <div className="alert warning-alert">
-                <strong>Stock Preparation</strong>
-                <p>
-                    Product C may require additional stock before peak demand.
-                </p>
+                  <strong>Stock Preparation</strong>
+
+                  <p>
+                    {highestDemandProduct
+                      ? `Additional stock preparation should be considered for ${highestDemandProduct.Product_Code} due to its high predicted demand.`
+                      : "Forecast data is loading."}
+                  </p>
                 </div>
 
+
                 <div className="alert success-alert">
-                <strong>Stable Demand</strong>
-                <p>
-                    Toner E is expected to maintain a stable order pattern.
-                </p>
+                  <strong>Demand Monitoring</strong>
+
+                  <p>
+                    {highDemandCount} products are classified as high demand,
+                    while {mediumDemandCount} are medium demand and{" "}
+                    {lowDemandCount} are low demand for 2026.
+                  </p>
                 </div>
-            </div>
+
+              </div>
 
             </div>
 
@@ -1733,177 +1845,107 @@ function AdminDashboard({ onLogout }) {
 
             <div className="panel">
 
-            <div className="forecast-page-header">
+              <div className="forecast-page-header">
                 <div>
-                <h3>Product Demand Forecast</h3>
+                  <h3>Product Demand Forecast</h3>
 
-                <p className="forecast-subtitle">
-                    View predicted demand and stock preparation level
-                </p>
+                  <p className="forecast-subtitle">
+                    Predicted annual demand for each product in 2026
+                  </p>
                 </div>
-            </div>
+              </div>
 
 
-            <div className="forecast-filters">
-
-                <input
-                type="text"
-                placeholder="Search Product ID or Product Name..."
-                />
-
-                <select>
-                <option>All Demand Levels</option>
-                <option>High Demand</option>
-                <option>Stable Demand</option>
-                <option>Low Demand</option>
-                </select>
-
-            </div>
-
-
-            <div className="bottom-panel">
+              <div className="bottom-panel">
 
                 <table>
 
-                <thead>
+                  <thead>
                     <tr>
-                    <th>Product ID</th>
-                    <th>Product</th>
-                    <th>Current Monthly Demand</th>
-                    <th>Predicted Demand</th>
-                    <th>Change</th>
-                    <th>Demand Level</th>
-                    <th>Current Stock</th>
-                    <th>Action</th>
+                      <th>Product Code</th>
+                      <th>Predicted Demand</th>
+                      <th>Demand Level</th>
+                      <th>Forecast Period</th>
                     </tr>
-                </thead>
+                  </thead>
 
+                  <tbody>
 
-                <tbody>
+                    {forecastLoading ? (
 
-                    <tr>
-                    <td>PRD001</td>
-                    <td>Serum A</td>
-                    <td>180</td>
-                    <td>245</td>
-                    <td>+36%</td>
+                      <tr>
+                        <td colSpan="4">
+                          Loading forecast data...
+                        </td>
+                      </tr>
 
-                    <td>
-                        <span className="status red">
-                        High
-                        </span>
-                    </td>
+                    ) : topProducts.length === 0 ? (
 
-                    <td>120</td>
+                      <tr>
+                        <td colSpan="4">
+                          No forecast data available.
+                        </td>
+                      </tr>
 
-                    <td>
-                        <button className="table-action-btn">
-                        View
-                        </button>
-                    </td>
-                    </tr>
+                    ) : (
 
+                      topProducts.map((item) => {
 
-                    <tr>
-                    <td>PRD002</td>
-                    <td>Cleanser B</td>
-                    <td>140</td>
-                    <td>165</td>
-                    <td>+18%</td>
+                        const level = getDemandCategory(
+                          item.Predicted_Quantity
+                        );
 
-                    <td>
-                        <span className="status yellow">
-                        Medium
-                        </span>
-                    </td>
+                        let statusClass = "yellow";
 
-                    <td>35</td>
+                        if (level === "High") {
+                          statusClass = "red";
+                        }
 
-                    <td>
-                        <button className="table-action-btn">
-                        View
-                        </button>
-                    </td>
-                    </tr>
+                        if (level === "Low") {
+                          statusClass = "green";
+                        }
 
+                        return (
+                          <tr key={item.Product_Code}>
 
-                    <tr>
-                    <td>PRD003</td>
-                    <td>Product C</td>
-                    <td>95</td>
-                    <td>150</td>
-                    <td>+58%</td>
+                            <td>
+                              {item.Product_Code}
+                            </td>
 
-                    <td>
-                        <span className="status red">
-                        High
-                        </span>
-                    </td>
+                            <td>
+                              {Math.round(
+                                item.Predicted_Quantity
+                              ).toLocaleString()} units
+                            </td>
 
-                    <td>8</td>
+                            <td>
+                              <span
+                                className={`status ${statusClass}`}
+                              >
+                                {level}
+                              </span>
+                            </td>
 
-                    <td>
-                        <button className="table-action-btn">
-                        View
-                        </button>
-                    </td>
-                    </tr>
+                            <td>
+                              Jan - Dec 2026
+                            </td>
 
+                          </tr>
+                        );
+                      })
 
-                    <tr>
-                    <td>PRD004</td>
-                    <td>Product D</td>
-                    <td>70</td>
-                    <td>68</td>
-                    <td>-3%</td>
+                    )}
 
-                    <td>
-                        <span className="status green">
-                        Stable
-                        </span>
-                    </td>
-
-                    <td>90</td>
-
-                    <td>
-                        <button className="table-action-btn">
-                        View
-                        </button>
-                    </td>
-                    </tr>
-
-
-                    <tr>
-                    <td>PRD005</td>
-                    <td>Toner E</td>
-                    <td>60</td>
-                    <td>48</td>
-                    <td>-20%</td>
-
-                    <td>
-                        <span className="status yellow">
-                        Low
-                        </span>
-                    </td>
-
-                    <td>175</td>
-
-                    <td>
-                        <button className="table-action-btn">
-                        View
-                        </button>
-                    </td>
-                    </tr>
-
-                </tbody>
+                  </tbody>
 
                 </table>
 
-            </div>
+              </div>
 
             </div>
-        </>
-        )}
+            
+            </>
+            )}
 
         {/* =========================
             CUSTOMER ANALYTICS
