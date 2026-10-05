@@ -686,3 +686,178 @@
     grid-template-columns: 1fr;
   }
 }
+
+.operator-import-area {
+  display: flex;
+  align-items: center;
+}
+
+.operator-import-btn {
+  display: inline-block;
+  padding: 10px 16px;
+  background: #d63384;
+  color: white;
+  border-radius: 8px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.operator-import-btn:hover {
+  opacity: 0.9;
+}
+
+.operator-import-file {
+  margin-bottom: 14px;
+  font-size: 13px;
+  color: #666;
+}
+
+/* =========================
+   IMPORT ORDERS
+========================= */
+
+.operator-import-area {
+  display: flex;
+  align-items: center;
+}
+
+.operator-import-btn {
+  display: inline-block;
+  padding: 10px 16px;
+  background: #d63384;
+  color: white;
+  border-radius: 8px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.operator-import-btn:hover {
+  opacity: 0.9;
+}
+
+.operator-import-file {
+  margin-bottom: 14px;
+  font-size: 13px;
+  color: #666;
+}
+
+
+/* =========================
+   ORDER DETAILS MODAL
+========================= */
+
+.operator-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  z-index: 9999;
+}
+
+
+.operator-modal {
+  width: 650px;
+  max-width: 90%;
+  max-height: 85vh;
+
+  overflow-y: auto;
+
+  background: white;
+  border-radius: 12px;
+
+  padding: 24px;
+}
+
+
+.operator-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+
+  margin-bottom: 20px;
+}
+
+
+.operator-modal-header h3 {
+  margin: 0;
+}
+
+
+.operator-modal-close {
+  border: none;
+  background: transparent;
+
+  font-size: 28px;
+
+  cursor: pointer;
+}
+
+
+.operator-modal-info {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+
+  gap: 12px 20px;
+
+  margin-bottom: 20px;
+}
+
+
+.operator-modal-info p {
+  margin: 0;
+}
+
+
+.operator-modal-address {
+  background: #f7f7f9;
+
+  padding: 12px 14px;
+
+  border-radius: 8px;
+
+  margin-bottom: 20px;
+}
+
+
+.operator-modal-address p {
+  margin: 3px 0;
+}
+
+
+.operator-modal-table {
+  width: 100%;
+
+  margin-top: 10px;
+}
+
+
+.operator-modal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+
+  margin-top: 20px;
+}
+
+
+.operator-modal-actions {
+  display: flex;
+  gap: 10px;
+}
+
+
+.operator-modal-cancel {
+  border: 1px solid #ddd;
+
+  background: white;
+
+  padding: 9px 16px;
+
+  border-radius: 7px;
+
+  cursor: pointer;
+}

@@ -1,8 +1,58 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import * as XLSX from "xlsx";
+import { db } from "./firebase";
+import {
+  doc,
+  setDoc,
+  collection,
+  getDocs
+} from "firebase/firestore";
 import "./OperatorDashboard.css";
 
 function OperatorDashboard({ onLogout }) {
   const [activePage, setActivePage] = useState("dashboard");
+  const [importedOrders, setImportedOrders] = useState([]);
+  const [importFileName, setImportFileName] = useState("");
+  const [selectedOrder, setSelectedOrder] = useState(null);
+
+  useEffect(() => {
+  const fetchOrders = async () => {
+    try {
+      const querySnapshot = await getDocs(collection(db, "orders"));
+
+      const orders = querySnapshot.docs.map((doc) => ({
+        id: doc.id,
+        ...doc.data(),
+      }));
+
+      setImportedOrders(orders);
+
+    } catch (error) {
+      console.error("Error fetching orders:", error);
+    }
+  };
+
+  fetchOrders();
+}, []);
+
+const formatExcelDate = (value) => {
+  if (!value) return "-";
+
+  const numericValue = Number(value);
+
+    if (!isNaN(numericValue) && numericValue > 40000) {
+      const excelEpoch = new Date(1899, 11, 30);
+
+      const date = new Date(
+        excelEpoch.getTime() +
+        numericValue * 24 * 60 * 60 * 1000
+      );
+
+      return date.toISOString().split("T")[0];
+    }
+
+    return value;
+  };
 
   return (
     <div className="operator-layout">
@@ -454,7 +504,10 @@ function OperatorDashboard({ onLogout }) {
 
               <div className="operator-card">
                 <p>New Orders</p>
-                <h2>18</h2>
+
+                <h2>
+                  {importedOrders.length}
+                </h2>
 
                 <span className="operator-pink">
                   Waiting to process
@@ -463,31 +516,54 @@ function OperatorDashboard({ onLogout }) {
 
 
               <div className="operator-card">
-                <p>Stock Available</p>
-                <h2>13</h2>
+                <p>Total Products</p>
+
+                <h2>
+                  {importedOrders.reduce(
+                    (total, order) => total + order.items.length,
+                    0
+                  )}
+                </h2>
 
                 <span className="operator-green">
-                  Ready for processing
+                  Imported products
                 </span>
               </div>
 
 
               <div className="operator-card">
-                <p>Low Stock</p>
-                <h2>3</h2>
+                <p>Total Items</p>
+
+                <h2>
+                  {importedOrders.reduce(
+                    (orderTotal, order) =>
+                      orderTotal +
+                      order.items.reduce(
+                        (itemTotal, item) =>
+                          itemTotal + item.Quantity,
+                        0
+                      ),
+                    0
+                  )}
+                </h2>
 
                 <span className="operator-yellow">
-                  Check inventory
+                  Items received
                 </span>
               </div>
 
 
               <div className="operator-card">
-                <p>Insufficient Stock</p>
-                <h2>2</h2>
+                <p>Imported File</p>
+
+                <h2>
+                  {importFileName ? "1" : "0"}
+                </h2>
 
                 <span className="operator-red">
-                  Cannot process
+                  {importFileName
+                    ? "File imported"
+                    : "No file imported"}
                 </span>
               </div>
 
@@ -501,15 +577,189 @@ function OperatorDashboard({ onLogout }) {
               <div className="operator-section-header">
 
                 <div>
-                    <h3>Incoming Orders</h3>
+                  <h3>Incoming Orders</h3>
 
-                    <p className="operator-section-subtitle">
-                        Review order information and stock availability
-                    </p>
-                    </div>
+                  <p className="operator-section-subtitle">
+                    Review imported customer orders before processing
+                  </p>
+                </div>
+
+
+                <div className="operator-import-area">
+
+                  <input
+                    type="file"
+                    accept=".csv,.xlsx,.xls"
+                    id="order-file-input"
+                    style={{ display: "none" }}
+                    onChange={(e) => {
+
+                      const file = e.target.files[0];
+
+                      if (!file) return;
+
+                      setImportFileName(file.name);
+
+                      const reader = new FileReader();
+
+
+                      reader.onload = async (event) => {
+
+                        const data =
+                          new Uint8Array(event.target.result);
+
+
+                        const workbook =
+                          XLSX.read(data, {
+                            type: "array",
+                          });
+
+
+                        const firstSheetName =
+                          workbook.SheetNames[0];
+
+
+                        const worksheet =
+                          workbook.Sheets[firstSheetName];
+
+
+                        const jsonData =
+                          XLSX.utils.sheet_to_json(
+                            worksheet
+                          );
+
+
+                        const groupedOrders =
+                          Object.values(
+
+                            jsonData.reduce(
+                              (acc, row) => {
+
+                                const orderId =
+                                  row.Order_ID;
+
+
+                                if (!orderId) {
+                                  return acc;
+                                }
+
+
+                                if (!acc[orderId]) {
+
+                                  acc[orderId] = {
+
+                                    Order_ID:
+                                      orderId,
+
+                                    Customer_Name:
+                                      row.Customer_Name,
+
+                                    Phone_Number:
+                                      row.Phone_Number,
+
+                                    Address:
+                                      row.Address,
+
+                                    Order_Date:
+                                      row.Order_Date,
+
+                                    Order_Time:
+                                      row.Order_Time,
+
+                                    Platform:
+                                      row.Platform,
+
+                                    items: [],
+
+                                  };
+                                }
+
+
+                                acc[orderId].items.push({
+
+                                  Product_Code:
+                                    row.Product_Code,
+
+                                  Product_Name:
+                                    row.Product_Name,
+
+                                  Quantity:
+                                    Number(
+                                      row.Quantity
+                                    ) || 0,
+
+                                });
+
+
+                                return acc;
+
+                              },
+                              {}
+                            )
+
+                          );
+
+
+                        console.log(
+                          "Grouped Orders:",
+                          groupedOrders
+                        );
+
+
+                        setImportedOrders(
+                          groupedOrders
+                        );
+                        for (const order of groupedOrders) {
+                          await setDoc(doc(db, "orders", order.Order_ID), {
+                            Order_ID: order.Order_ID,
+                            Customer_Name: order.Customer_Name || "",
+                            Phone_Number: order.Phone_Number || "",
+                            Address: order.Address || "",
+                            Order_Date: formatExcelDate(order.Order_Date),
+                            Order_Time: order.Order_Time || "",
+                            Platform: order.Platform || "",
+                            items: order.items || [],
+                            Order_Status: "New Order",
+                          });
+                        }
+
+                      };
+
+
+                      reader.readAsArrayBuffer(
+                        file
+                      );
+
+                    }}
+                  />
+
+
+                  <label
+                    htmlFor="order-file-input"
+                    className="operator-import-btn"
+                  >
+                    Import Orders
+                  </label>
+
+                </div>
 
               </div>
 
+
+              {/* SELECTED FILE */}
+
+              {importFileName && (
+
+                <div className="operator-import-file">
+
+                  Selected file: {importFileName}
+
+                </div>
+
+              )}
+
+
+              {/* FILTER */}
 
               <div className="operator-new-order-filters">
 
@@ -522,19 +772,19 @@ function OperatorDashboard({ onLogout }) {
                 <select>
 
                   <option>
-                    All Stock Status
+                    All Platforms
                   </option>
 
                   <option>
-                    Available
+                    Shopee
                   </option>
 
                   <option>
-                    Low Stock
+                    TikTok
                   </option>
 
                   <option>
-                    Insufficient
+                    Other
                   </option>
 
                 </select>
@@ -542,21 +792,50 @@ function OperatorDashboard({ onLogout }) {
               </div>
 
 
+              {/* TABLE */}
+
               <table>
 
                 <thead>
 
                   <tr>
-                    <th>Order ID</th>
-                    <th>Customer</th>
-                    <th>Product</th>
-                    <th>Qty</th>
-                    <th>Order Date</th>
-                    <th>Order Time</th>
-                    <th>Available Stock</th>
-                    <th>Stock Status</th>
-                    <th>Order Status</th>
-                    <th>Action</th>
+
+                    <th>
+                      Order ID
+                    </th>
+
+                    <th>
+                      Customer
+                    </th>
+
+                    <th>
+                      Products
+                    </th>
+
+                    <th>
+                      Total Items
+                    </th>
+
+                    <th>
+                      Order Date
+                    </th>
+
+                    <th>
+                      Order Time
+                    </th>
+
+                    <th>
+                      Platform
+                    </th>
+
+                    <th>
+                      Order Status
+                    </th>
+
+                    <th>
+                      Action
+                    </th>
+
                   </tr>
 
                 </thead>
@@ -564,131 +843,129 @@ function OperatorDashboard({ onLogout }) {
 
                 <tbody>
 
-                  <tr>
+                  {importedOrders.length > 0 ? (
 
-                    <td>ORD1070</td>
-                    <td>Aina</td>
-                    <td>Serum A</td>
-                    <td>2</td>
-                    <td>25/09/2026</td>
-                    <td>10:05 AM</td>
-                    <td>120</td>
+                    importedOrders.map(
+                      (order) => {
 
-                    <td>
-                      <span className="operator-status operator-green-status">
-                        Available
-                      </span>
-                    </td>
+                        const totalItems =
+                          order.items.reduce(
 
-                    <td>
-                      <span className="operator-status operator-pink-status">
-                        New Order
-                      </span>
-                    </td>
+                            (total, item) =>
+                              total +
+                              item.Quantity,
 
-                    <td>
-                      <button className="operator-action-btn">
-                        Process
-                      </button>
-                    </td>
+                            0
 
-                  </tr>
+                          );
 
 
-                  <tr>
+                        return (
 
-                    <td>ORD1071</td>
-                    <td>Farah</td>
-                    <td>Cleanser B</td>
-                    <td>4</td>
-                    <td>25/09/2026</td>
-                    <td>10:12 AM</td>
-                    <td>35</td>
+                          <tr
+                            key={order.Order_ID}
+                          >
 
-                    <td>
-                      <span className="operator-status operator-yellow-status">
-                        Low Stock
-                      </span>
-                    </td>
-
-                    <td>
-                      <span className="operator-status operator-pink-status">
-                        New Order
-                      </span>
-                    </td>
-
-                    <td>
-                      <button className="operator-action-btn">
-                        Process
-                      </button>
-                    </td>
-
-                  </tr>
+                            <td>
+                              {order.Order_ID}
+                            </td>
 
 
-                  <tr>
+                            <td>
+                              {order.Customer_Name ||
+                                "-"}
+                            </td>
 
-                    <td>ORD1072</td>
-                    <td>Amir</td>
-                    <td>Product C</td>
-                    <td>10</td>
-                    <td>25/09/2026</td>
-                    <td>10:20 AM</td>
-                    <td>8</td>
 
-                    <td>
-                      <span className="operator-status operator-red-status">
-                        Insufficient
-                      </span>
-                    </td>
+                            <td>
 
-                    <td>
-                      <span className="operator-status operator-red-status">
-                        Hold
-                      </span>
-                    </td>
+                              {order.items.length}{" "}
 
-                    <td>
-                      <button
-                        className="operator-action-btn disabled-btn"
-                        disabled
+                              {order.items.length === 1
+                                ? "Product"
+                                : "Products"}
+
+                            </td>
+
+
+                            <td>
+                              {totalItems}
+                            </td>
+
+
+                            <td>
+                              {formatExcelDate(order.Order_Date)}
+                            </td>
+
+
+                            <td>
+                              {order.Order_Time ||
+                                "-"}
+                            </td>
+
+
+                            <td>
+                              {order.Platform ||
+                                "-"}
+                            </td>
+
+
+                            <td>
+
+                              <span className="operator-status operator-pink-status">
+
+                                New Order
+
+                              </span>
+
+                            </td>
+
+
+                            <td>
+
+                              <button
+
+                                className="operator-action-btn"
+
+                                onClick={() =>
+                                  setSelectedOrder(
+                                    order
+                                  )
+                                }
+
+                              >
+
+                                View
+
+                              </button>
+
+                            </td>
+
+                          </tr>
+
+                        );
+
+                      }
+                    )
+
+                  ) : (
+
+                    <tr>
+
+                      <td
+                        colSpan="9"
+                        style={{
+                          textAlign: "center",
+                        }}
                       >
-                        Waiting Stock
-                      </button>
-                    </td>
 
-                  </tr>
+                        No orders imported yet.
 
+                      </td>
 
-                  <tr>
+                    </tr>
 
-                    <td>ORD1073</td>
-                    <td>Hana</td>
-                    <td>Toner E</td>
-                    <td>3</td>
-                    <td>25/09/2026</td>
-                    <td>10:31 AM</td>
-                    <td>175</td>
-
-                    <td>
-                      <span className="operator-status operator-green-status">
-                        Available
-                      </span>
-                    </td>
-
-                    <td>
-                      <span className="operator-status operator-pink-status">
-                        New Order
-                      </span>
-                    </td>
-
-                    <td>
-                      <button className="operator-action-btn">
-                        Process
-                      </button>
-                    </td>
-
-                  </tr>
+                  )}
 
                 </tbody>
 
@@ -696,8 +973,251 @@ function OperatorDashboard({ onLogout }) {
 
             </div>
 
-          </>
-        )}
+
+    {/* =========================
+        ORDER DETAILS MODAL
+    ========================== */}
+
+    {selectedOrder && (
+
+      <div className="operator-modal-overlay">
+
+
+        <div className="operator-modal">
+
+
+          {/* MODAL HEADER */}
+
+          <div className="operator-modal-header">
+
+            <h3>
+              Order Details
+            </h3>
+
+
+            <button
+
+              className="operator-modal-close"
+
+              onClick={() =>
+                setSelectedOrder(null)
+              }
+
+            >
+
+              ×
+
+            </button>
+
+          </div>
+
+
+          {/* CUSTOMER INFORMATION */}
+
+          <div className="operator-modal-info">
+
+            <p>
+              <strong>
+                Order ID:
+              </strong>{" "}
+
+              {selectedOrder.Order_ID}
+            </p>
+
+
+            <p>
+              <strong>
+                Customer:
+              </strong>{" "}
+
+              {selectedOrder.Customer_Name ||
+                "-"}
+            </p>
+
+
+            <p>
+              <strong>
+                Phone:
+              </strong>{" "}
+
+              {selectedOrder.Phone_Number ||
+                "-"}
+            </p>
+
+
+            <p>
+              <strong>
+                Platform:
+              </strong>{" "}
+
+              {selectedOrder.Platform ||
+                "-"}
+            </p>
+
+
+            <p>
+              <strong>
+                Date:
+              </strong>{" "}
+
+              {formatExcelDate(selectedOrder.Order_Date)}
+            </p>
+
+
+            <p>
+              <strong>
+                Time:
+              </strong>{" "}
+
+              {selectedOrder.Order_Time ||
+                "-"}
+            </p>
+
+          </div>
+
+
+          {/* ADDRESS */}
+
+          <div className="operator-modal-address">
+
+            <p>
+
+              <strong>
+                Delivery Address:
+              </strong>
+
+            </p>
+
+            <p>
+
+              {selectedOrder.Address ||
+                "-"}
+
+            </p>
+
+          </div>
+
+
+          {/* ORDER ITEMS */}
+
+          <h4>
+            Order Items
+          </h4>
+
+
+          <table className="operator-modal-table">
+
+            <thead>
+
+              <tr>
+
+                <th>
+                  Product Code
+                </th>
+
+                <th>
+                  Product
+                </th>
+
+                <th>
+                  Qty
+                </th>
+
+              </tr>
+
+            </thead>
+
+
+            <tbody>
+
+              {selectedOrder.items?.map(
+                (item, index) => (
+
+                  <tr key={index}>
+
+                    <td>
+                      {item.Product_Code ||
+                        "-"}
+                    </td>
+
+                    <td>
+                      {item.Product_Name ||
+                        "-"}
+                    </td>
+
+                    <td>
+                      {item.Quantity}
+                    </td>
+
+                  </tr>
+
+                )
+              )}
+
+            </tbody>
+
+          </table>
+
+
+          {/* MODAL FOOTER */}
+
+          <div className="operator-modal-footer">
+
+            <strong>
+
+              Total Items:{" "}
+
+              {selectedOrder.items?.reduce(
+
+                (total, item) =>
+                  total +
+                  item.Quantity,
+
+                0
+
+              )}
+
+            </strong>
+
+
+            <div className="operator-modal-actions">
+
+              <button
+
+                className="operator-modal-cancel"
+
+                onClick={() =>
+                  setSelectedOrder(null)
+                }
+
+              >
+
+                Close
+
+              </button>
+
+
+              <button
+                className="operator-action-btn"
+              >
+
+                Process Order
+
+              </button>
+
+            </div>
+
+          </div>
+
+
+        </div>
+
+      </div>
+
+    )}
+
+  </>
+)}
 
         {/* =========================
             ORDER PROCESSING
