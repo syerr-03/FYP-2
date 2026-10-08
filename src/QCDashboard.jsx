@@ -1,5 +1,12 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import "./QCDashboard.css";
+import { db } from "./firebase";
+import {
+  collection,
+  getDocs,
+  doc,
+  updateDoc,
+} from "firebase/firestore";
 
 function QCDashboard({ onLogout }) {
   const [activePage, setActivePage] = useState("dashboard");
@@ -9,6 +16,68 @@ function QCDashboard({ onLogout }) {
     ORD1062: "Waiting QC",
     ORD1063: "Waiting QC",
     });
+  const [qcOrders, setQcOrders] = useState([]);
+
+useEffect(() => {
+  const fetchQCOrders = async () => {
+    try {
+      const querySnapshot = await getDocs(collection(db, "orders"));
+
+      const orders = querySnapshot.docs
+        .map((doc) => ({
+          id: doc.id,
+          ...doc.data(),
+        }))
+        .filter(
+          (order) =>
+            order.Order_Status === "Waiting QC" &&
+            ["Pending", "Inspecting", "Recheck"].includes(
+              order.QC_Status
+            )
+        );
+
+      setQcOrders(orders);
+    } catch (error) {
+      console.error("Error fetching QC orders:", error);
+    }
+  };
+
+  fetchQCOrders();
+}, []);
+
+
+const newQCOrderCount = qcOrders.filter(
+  (order) => order.QC_Viewed !== true
+).length;
+
+const handleOpenPendingInspection = async () => {
+  setActivePage("pending");
+
+  try {
+    const unreadOrders = qcOrders.filter(
+      (order) => order.QC_Viewed !== true
+    );
+
+    for (const order of unreadOrders) {
+      await updateDoc(
+        doc(db, "orders", order.Order_ID),
+        {
+          QC_Viewed: true,
+        }
+      );
+    }
+
+    setQcOrders((prevOrders) =>
+      prevOrders.map((order) => ({
+        ...order,
+        QC_Viewed: true,
+      }))
+    );
+  } catch (error) {
+    console.error("Error marking QC orders as viewed:", error);
+  }
+};
+
 
   return (
     <div className="qc-layout">
@@ -40,9 +109,15 @@ function QCDashboard({ onLogout }) {
                   ? "qc-active"
                   : ""
               }
-              onClick={() => setActivePage("pending")}
+              onClick={handleOpenPendingInspection}
             >
-              Pending Inspection
+              <span>Pending Inspection</span>
+
+              {newQCOrderCount > 0 && activePage !== "pending" && (
+                <span className="qc-notification-badge">
+                  {newQCOrderCount}
+                </span>
+              )}
             </a>
 
             <a
@@ -568,122 +643,102 @@ function QCDashboard({ onLogout }) {
 
 
                 <tbody>
+                  {qcOrders.map((order) => (
+                    <tr key={order.Order_ID}>
+                      <td>{order.Order_ID}</td>
 
-                  <tr>
+                      <td>
+                        {order.Customer_Name || order.Customer || "-"}
+                      </td>
 
-                    <td>ORD1060</td>
-                    <td>Amir</td>
-                    <td>Product C</td>
-                    <td>4</td>
-                    <td>Operator 01</td>
+                      <td>
+                        {order.items && order.items.length > 0
+                          ? order.items.map((item) => item.Product_Name).join(", ")
+                          : "-"}
+                      </td>
 
-                    <td>
-                      25/09/2026
-                      <br />
-                      09:15 AM
-                    </td>
+                      <td>
+                        {order.items
+                          ? order.items.reduce(
+                              (total, item) =>
+                                total + Number(item.Quantity || 0),
+                              0
+                            )
+                          : "-"}
+                      </td>
 
-                    <td>
-                      <span className="qc-status qc-yellow-status">
-                        Waiting QC
-                      </span>
-                    </td>
+                      <td>Operator 01</td>
 
-                    <td>
-                      <button className="qc-action-btn">
-                        Inspect
-                      </button>
-                    </td>
+                      <td>
+                        {order.Sent_To_QC_At
+                          ? new Date(order.Sent_To_QC_At).toLocaleString()
+                          : "-"}
+                      </td>
 
-                  </tr>
+                      <td>
+                        <span className="qc-status qc-yellow-status">
+                          Waiting QC
+                        </span>
+                      </td>
 
+                      <td>
+                        <button
+                          className="qc-action-btn"
+                          onClick={async () => {
+                            try {
+                              await updateDoc(
+                                doc(db, "orders", order.Order_ID),
+                                {
+                                  QC_Status: "Inspecting",
+                                  QC_Inspecting_At: new Date().toISOString(),
+                                }
+                              );
 
-                  <tr>
+                              setQcOrders((prevOrders) =>
+                                prevOrders.map((item) =>
+                                  item.Order_ID === order.Order_ID
+                                    ? {
+                                        ...item,
+                                        QC_Status: "Inspecting",
+                                      }
+                                    : item
+                                )
+                              );
 
-                    <td>ORD1062</td>
-                    <td>Hana</td>
-                    <td>Serum A</td>
-                    <td>3</td>
-                    <td>Operator 02</td>
-
-                    <td>
-                      25/09/2026
-                      <br />
-                      09:30 AM
-                    </td>
-
-                    <td>
-                      <span className="qc-status qc-blue-status">
-                        Inspecting
-                      </span>
-                    </td>
-
-                    <td>
-                      <button className="qc-action-btn">
-                        Continue
-                      </button>
-                    </td>
-
-                  </tr>
-
-
-                  <tr>
-
-                    <td>ORD1063</td>
-                    <td>Nadia</td>
-                    <td>Cleanser B</td>
-                    <td>2</td>
-                    <td>Operator 01</td>
-
-                    <td>
-                      25/09/2026
-                      <br />
-                      09:45 AM
-                    </td>
-
-                    <td>
-                      <span className="qc-status qc-yellow-status">
-                        Recheck
-                      </span>
-                    </td>
-
-                    <td>
-                      <button className="qc-action-btn">
-                        Recheck
-                      </button>
-                    </td>
-
-                  </tr>
-
-
-                  <tr>
-
-                    <td>ORD1064</td>
-                    <td>Sofia</td>
-                    <td>Toner E</td>
-                    <td>5</td>
-                    <td>Operator 03</td>
-
-                    <td>
-                      25/09/2026
-                      <br />
-                      10:00 AM
-                    </td>
-
-                    <td>
-                      <span className="qc-status qc-yellow-status">
-                        Waiting QC
-                      </span>
-                    </td>
-
-                    <td>
-                      <button className="qc-action-btn">
-                        Inspect
-                      </button>
-                    </td>
-
-                  </tr>
-
+                              setSelectedInspection({
+                                orderId: order.Order_ID,
+                                customer:
+                                  order.Customer_Name ||
+                                  order.Customer ||
+                                  "-",
+                                product:
+                                  order.items && order.items.length > 0
+                                    ? order.items
+                                        .map((item) => item.Product_Name)
+                                        .join(", ")
+                                    : "-",
+                                qty: order.items
+                                  ? order.items.reduce(
+                                      (total, item) =>
+                                        total + Number(item.Quantity || 0),
+                                      0
+                                    )
+                                  : 0,
+                                operator: "Operator 01",
+                              });
+                            } catch (error) {
+                              console.error(
+                                "Error starting QC inspection:",
+                                error
+                              );
+                            }
+                          }}
+                        >
+                          Inspect
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
                 </tbody>
 
               </table>
@@ -785,15 +840,38 @@ function QCDashboard({ onLogout }) {
 
       <button
         className="qc-recheck-btn"
-        onClick={() => {
+        onClick={async () => {
+          try {
+            await updateDoc(
+              doc(db, "orders", selectedInspection.orderId),
+              {
+                QC_Status: "Recheck",
+                Order_Status: "Waiting QC",
+                QC_Recheck_At: new Date().toISOString(),
+              }
+            );
 
-          setInspectionStatuses((prev) => ({
-            ...prev,
-            [selectedInspection.orderId]: "Recheck",
-          }));
+            setQcOrders((prevOrders) =>
+              prevOrders.map((order) =>
+                order.Order_ID === selectedInspection.orderId
+                  ? {
+                      ...order,
+                      QC_Status: "Recheck",
+                      Order_Status: "Waiting QC",
+                    }
+                  : order
+              )
+            );
 
-          setSelectedInspection(null);
+            setInspectionStatuses((prev) => ({
+              ...prev,
+              [selectedInspection.orderId]: "Recheck",
+            }));
 
+            setSelectedInspection(null);
+          } catch (error) {
+            console.error("Error setting order for recheck:", error);
+          }
         }}
       >
         Recheck
@@ -802,15 +880,40 @@ function QCDashboard({ onLogout }) {
 
       <button
         className="qc-complete-btn"
-        onClick={() => {
+        onClick={async () => {
+          try {
+            const completedTime = new Date().toISOString();
 
-          setInspectionStatuses((prev) => ({
-            ...prev,
-            [selectedInspection.orderId]: "Completed",
-          }));
+            await updateDoc(
+              doc(db, "orders", selectedInspection.orderId),
+              {
+                QC_Status: "Approved",
+                Order_Status: "Ready for Delivery",
+                QC_Result: "Passed",
+                QC_Completed_At: completedTime,
+                Delivery_Status: "Pending Delivery",
+              }
+            );
 
-          setSelectedInspection(null);
+            setQcOrders((prevOrders) =>
+              prevOrders.filter(
+                (order) =>
+                  order.Order_ID !== selectedInspection.orderId
+              )
+            );
 
+            setInspectionStatuses((prev) => ({
+              ...prev,
+              [selectedInspection.orderId]: "Completed",
+            }));
+
+            setSelectedInspection(null);
+          } catch (error) {
+            console.error(
+              "Error completing QC inspection:",
+              error
+            );
+          }
         }}
       >
         Complete Inspection

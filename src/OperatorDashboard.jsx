@@ -4,6 +4,7 @@ import { db } from "./firebase";
 import {
   doc,
   setDoc,
+  getDoc,
   collection,
   getDocs
 } from "firebase/firestore";
@@ -14,26 +15,51 @@ function OperatorDashboard({ onLogout }) {
   const [importedOrders, setImportedOrders] = useState([]);
   const [importFileName, setImportFileName] = useState("");
   const [selectedOrder, setSelectedOrder] = useState(null);
+  const [inventoryData, setInventoryData] = useState([]);
+  const [inventorySearch, setInventorySearch] = useState("");
+  const [stockFilter, setStockFilter] = useState("All");
 
   useEffect(() => {
-  const fetchOrders = async () => {
-    try {
-      const querySnapshot = await getDocs(collection(db, "orders"));
+    const fetchData = async () => {
+      try {
+        // =========================
+        // FETCH ORDERS
+        // =========================
+        const orderSnapshot = await getDocs(
+          collection(db, "orders")
+        );
 
-      const orders = querySnapshot.docs.map((doc) => ({
-        id: doc.id,
-        ...doc.data(),
-      }));
+        const orders = orderSnapshot.docs.map((doc) => ({
+          id: doc.id,
+          ...doc.data(),
+        }));
 
-      setImportedOrders(orders);
+        setImportedOrders(orders);
 
-    } catch (error) {
-      console.error("Error fetching orders:", error);
-    }
-  };
 
-  fetchOrders();
-}, []);
+        // =========================
+        // FETCH INVENTORY
+        // =========================
+        const inventorySnapshot = await getDocs(
+          collection(db, "inventory")
+        );
+
+        const inventory = inventorySnapshot.docs.map((doc) => ({
+          id: doc.id,
+          ...doc.data(),
+        }));
+
+        console.log("Inventory from Firebase:", inventory);
+
+        setInventoryData(inventory);
+
+      } catch (error) {
+        console.error("Error fetching data:", error);
+      }
+    };
+
+    fetchData();
+  }, []);
 
 const formatExcelDate = (value) => {
   if (!value) return "-";
@@ -53,6 +79,405 @@ const formatExcelDate = (value) => {
 
     return value;
   };
+
+  const newOrders = importedOrders.filter(
+  (order) => (order.Order_Status || "New Order") === "New Order"
+);
+
+const processingOrders = importedOrders.filter((order) =>
+  [
+    "Processing",
+    "Preparing",
+    "Prepared",
+    "Waiting QC",
+    "QC Approved",
+    "Hold",
+  ].includes(order.Order_Status)
+);
+
+const handleProcessOrder = async () => {
+  if (!selectedOrder) return;
+
+  try {
+    let enoughStock = true;
+
+    // Check every product in the order
+    for (const item of selectedOrder.items) {
+      const productRef = doc(
+        db,
+        "inventory",
+        String(item.Product_Code)
+      );
+
+      const productSnap = await getDoc(productRef);
+
+      if (!productSnap.exists()) {
+        enoughStock = false;
+        break;
+      }
+
+      const stockData = productSnap.data();
+
+      const availableStock =
+        Number(stockData.Available_Stock || 0);
+
+      const orderQty =
+        Number(item.Quantity || 0);
+
+      if (availableStock < orderQty) {
+        enoughStock = false;
+        break;
+      }
+    }
+
+    const processedAt = new Date().toISOString();
+
+    // =========================
+    // STOCK ENOUGH
+    // =========================
+    if (enoughStock) {
+
+      for (const item of selectedOrder.items) {
+        const productRef = doc(
+          db,
+          "inventory",
+          String(item.Product_Code)
+        );
+
+        const productSnap = await getDoc(productRef);
+        const stockData = productSnap.data();
+
+        const qty = Number(item.Quantity || 0);
+
+        const newReserved =
+          Number(stockData.Reserved_Stock || 0) + qty;
+
+        const newAvailable =
+          Number(stockData.Available_Stock || 0) - qty;
+
+        await setDoc(
+          productRef,
+          {
+            Reserved_Stock: newReserved,
+            Available_Stock: newAvailable,
+          },
+          { merge: true }
+        );
+      }
+
+      await setDoc(
+        doc(db, "orders", selectedOrder.Order_ID),
+        {
+          Order_Status: "Processing",
+          Stock_Status: "Reserved",
+          Processed_At: processedAt,
+        },
+        { merge: true }
+      );
+
+      setImportedOrders((prevOrders) =>
+        prevOrders.map((order) =>
+          order.Order_ID === selectedOrder.Order_ID
+            ? {
+                ...order,
+                Order_Status: "Processing",
+                Stock_Status: "Reserved",
+                Processed_At: processedAt,
+              }
+            : order
+        )
+      );
+
+    }
+
+    // =========================
+    // STOCK NOT ENOUGH
+    // =========================
+    else {
+
+      await setDoc(
+        doc(db, "orders", selectedOrder.Order_ID),
+        {
+          Order_Status: "Hold",
+          Stock_Status: "Waiting Stock",
+          Processed_At: processedAt,
+        },
+        { merge: true }
+      );
+
+      setImportedOrders((prevOrders) =>
+        prevOrders.map((order) =>
+          order.Order_ID === selectedOrder.Order_ID
+            ? {
+                ...order,
+                Order_Status: "Hold",
+                Stock_Status: "Waiting Stock",
+                Processed_At: processedAt,
+              }
+            : order
+        )
+      );
+    }
+
+    setSelectedOrder(null);
+    setActivePage("processing");
+
+  } catch (error) {
+    console.error("Error processing order:", error);
+  }
+};
+
+
+const importInventoryFromMaster = async () => {
+  try {
+    const response = await fetch(
+      "/data/FYP_Master_All_43_Products_Related.xlsx"
+    );
+
+    const arrayBuffer = await response.arrayBuffer();
+
+    const workbook = XLSX.read(arrayBuffer, {
+      type: "array",
+    });
+
+    const worksheet = workbook.Sheets["Stock_Model_Input"];
+
+    const stockData = XLSX.utils.sheet_to_json(worksheet);
+
+    // Cari latest year dan month untuk setiap product
+    const latestStock = {};
+
+    stockData.forEach((row) => {
+      const productCode = row.Product_Code;
+
+      if (!productCode) return;
+
+      const currentKey =
+        Number(row.Year) * 100 +
+        Number(row.Month_Number);
+
+      const existingKey = latestStock[productCode]
+        ? Number(latestStock[productCode].Year) * 100 +
+          Number(latestStock[productCode].Month_Number)
+        : 0;
+
+      if (currentKey > existingKey) {
+        latestStock[productCode] = row;
+      }
+    });
+
+    const inventoryList = Object.values(latestStock);
+
+    for (const item of inventoryList) {
+      const currentStock = Number(item.Ending_Stock || 0);
+
+      await setDoc(
+        doc(db, "inventory", String(item.Product_Code)),
+        {
+          Product_Code: String(item.Product_Code),
+          Product_Name: item.Product_Name || "",
+          Current_Stock: currentStock,
+          Reserved_Stock: 0,
+          Available_Stock: currentStock,
+          Reorder_Level: Number(item.Reorder_Level || 0),
+          Safety_Stock: Number(item.Safety_Stock || 0),
+          Lead_Time_Days: Number(item.Lead_Time_Days || 0),
+          Stock_Year: Number(item.Year),
+          Stock_Month: Number(item.Month_Number),
+        },
+        { merge: true }
+      );
+    }
+
+    console.log(
+      `${inventoryList.length} inventory products uploaded successfully`
+    );
+
+  } catch (error) {
+    console.error("Error importing inventory:", error);
+  }
+};
+
+const syncInventoryToFirebase = async () => {
+  try {
+    const response = await fetch("http://127.0.0.1:5000/inventory");
+    const result = await response.json();
+
+    const inventoryData = result.data || result;
+
+    for (const item of inventoryData) {
+      await setDoc(
+        doc(db, "inventory", item.Product_Code),
+        {
+          Product_Code: item.Product_Code,
+          Product_Name: item.Product_Name,
+          Current_Stock: item.Current_Stock,
+          Reserved_Stock: item.Reserved_Stock,
+          Available_Stock: item.Available_Stock,
+          Reorder_Level: item.Reorder_Level,
+          Safety_Stock: item.Safety_Stock,
+          Lead_Time_Days: item.Lead_Time_Days,
+          Stock_Year: item.Stock_Year,
+          Stock_Month: item.Stock_Month,
+        },
+        { merge: true }
+      );
+    }
+
+    console.log("Inventory synced to Firebase successfully");
+    alert("Inventory synced successfully");
+  } catch (error) {
+    console.error("Error syncing inventory:", error);
+    alert("Failed to sync inventory");
+  }
+};
+
+const handleStartPreparing = async (order) => {
+  try {
+    const preparingAt = new Date().toISOString();
+
+    await setDoc(
+      doc(db, "orders", order.Order_ID),
+      {
+        Order_Status: "Preparing",
+        Preparing_At: preparingAt,
+      },
+      { merge: true }
+    );
+
+    setImportedOrders((prevOrders) =>
+      prevOrders.map((item) =>
+        item.Order_ID === order.Order_ID
+          ? {
+              ...item,
+              Order_Status: "Preparing",
+              Preparing_At: preparingAt,
+            }
+          : item
+      )
+    );
+
+  } catch (error) {
+    console.error("Error starting preparation:", error);
+  }
+};
+
+const handleMarkPrepared = async (order) => {
+  try {
+    const preparedAt = new Date().toISOString();
+
+    await setDoc(
+      doc(db, "orders", order.Order_ID),
+      {
+        Order_Status: "Prepared",
+        Prepared_At: preparedAt,
+      },
+      { merge: true }
+    );
+
+    setImportedOrders((prevOrders) =>
+      prevOrders.map((item) =>
+        item.Order_ID === order.Order_ID
+          ? {
+              ...item,
+              Order_Status: "Prepared",
+              Prepared_At: preparedAt,
+            }
+          : item
+      )
+    );
+
+  } catch (error) {
+    console.error("Error marking order as prepared:", error);
+  }
+};
+
+const handleSendToQC = async (order) => {
+  try {
+    const orderRef = doc(db, "orders", order.Order_ID);
+
+    const sentTime = new Date().toISOString();
+
+    await setDoc(
+      orderRef,
+      {
+        Order_Status: "Waiting QC",
+        QC_Status: "Pending",
+        Sent_To_QC_At: sentTime,
+        QC_Viewed: false,
+      },
+      { merge: true }
+    );
+
+    setImportedOrders((prevOrders) =>
+      prevOrders.map((item) =>
+        item.Order_ID === order.Order_ID
+          ? {
+              ...item,
+              Order_Status: "Waiting QC",
+              QC_Status: "Pending",
+              Sent_To_QC_At: sentTime,
+              QC_Viewed: false,
+            }
+          : item
+      )
+    );
+
+    alert(`${order.Order_ID} has been sent to QC.`);
+  } catch (error) {
+    console.error("Error sending order to QC:", error);
+    alert("Failed to send order to QC.");
+  }
+};
+
+const totalProducts = inventoryData.length;
+
+const totalAvailableStock = inventoryData.reduce(
+  (total, item) => total + Number(item.Available_Stock || 0),
+  0
+);
+
+const lowStockCount = inventoryData.filter((item) => {
+  const available = Number(item.Available_Stock || 0);
+  const reorder = Number(item.Reorder_Level || 0);
+
+  return available > 0 && available <= reorder;
+}).length;
+
+const outOfStockCount = inventoryData.filter(
+  (item) => Number(item.Available_Stock || 0) <= 0
+).length;
+
+const filteredInventory = inventoryData.filter((item) => {
+  const available = Number(item.Available_Stock || 0);
+  const reorder = Number(item.Reorder_Level || 0);
+  const safety = Number(item.Safety_Stock || 0);
+
+  let status = "Available";
+
+  if (available <= 0) {
+    status = "Out of Stock";
+  } else if (available <= safety) {
+    status = "Critical";
+  } else if (available <= reorder) {
+    status = "Low Stock";
+  }
+
+  const matchesSearch =
+    item.Product_Name?.toLowerCase().includes(
+      inventorySearch.toLowerCase()
+    ) ||
+    item.Product_Code?.toLowerCase().includes(
+      inventorySearch.toLowerCase()
+    );
+
+  const matchesFilter =
+    stockFilter === "All" ||
+    status === stockFilter;
+
+  return matchesSearch && matchesFilter;
+});
+
 
   return (
     <div className="operator-layout">
@@ -506,7 +931,7 @@ const formatExcelDate = (value) => {
                 <p>New Orders</p>
 
                 <h2>
-                  {importedOrders.length}
+                  {newOrders.length}
                 </h2>
 
                 <span className="operator-pink">
@@ -843,9 +1268,8 @@ const formatExcelDate = (value) => {
 
                 <tbody>
 
-                  {importedOrders.length > 0 ? (
-
-                    importedOrders.map(
+                  {newOrders.length > 0 ? (
+                    newOrders.map(
                       (order) => {
 
                         const totalItems =
@@ -878,13 +1302,9 @@ const formatExcelDate = (value) => {
 
 
                             <td>
-
-                              {order.items.length}{" "}
-
-                              {order.items.length === 1
-                                ? "Product"
-                                : "Products"}
-
+                              {order.items
+                                .map((item) => item.Product_Name)
+                                .join(", ")}
                             </td>
 
 
@@ -1199,10 +1619,9 @@ const formatExcelDate = (value) => {
 
               <button
                 className="operator-action-btn"
+                onClick={handleProcessOrder}
               >
-
                 Process Order
-
               </button>
 
             </div>
@@ -1350,7 +1769,7 @@ const formatExcelDate = (value) => {
             </div>
 
 
-            <table>
+            <table className="operator-processing-table">
 
                 <thead>
 
@@ -1370,144 +1789,140 @@ const formatExcelDate = (value) => {
 
                 <tbody>
 
-                <tr>
+                  {processingOrders.length > 0 ? (
+                    processingOrders.map((order) => {
+                      const totalQty =
+                        order.items?.reduce(
+                          (total, item) => total + Number(item.Quantity || 0),
+                          0
+                        ) || 0;
 
-                    <td>ORD1070</td>
-                    <td>Aina</td>
-                    <td>Serum A</td>
-                    <td>2</td>
+                      const productNames =
+                        order.items
+                          ?.map((item) => item.Product_Name)
+                          .filter(Boolean)
+                          .join(", ") || "-";
 
-                    <td>
-                    25/09/2026
-                    <br />
-                    10:10 AM
-                    </td>
+                      const processedDate = order.Processed_At
+                        ? new Date(order.Processed_At)
+                        : null;
 
-                    <td>
-                    <span className="operator-status operator-green-status">
-                        Reserved
-                    </span>
-                    </td>
+                      return (
+                        <tr key={order.Order_ID}>
 
-                    <td>
-                    <span className="operator-status operator-blue-status">
-                        Processing
-                    </span>
-                    </td>
+                          <td>{order.Order_ID}</td>
 
-                    <td>
-                    <button className="operator-action-btn">
-                        Start Preparing
-                    </button>
-                    </td>
+                          <td>
+                            {order.Customer_Name || "-"}
+                          </td>
 
-                </tr>
+                          <td>
+                            {productNames}
+                          </td>
 
+                          <td>
+                            {totalQty}
+                          </td>
 
-                <tr>
+                          <td>
+                            {processedDate ? (
+                              <>
+                                {processedDate.toLocaleDateString("en-GB")}
+                                <br />
+                                {processedDate.toLocaleTimeString([], {
+                                  hour: "2-digit",
+                                  minute: "2-digit",
+                                })}
+                              </>
+                            ) : (
+                              "-"
+                            )}
+                          </td>
 
-                    <td>ORD1068</td>
-                    <td>Nadia</td>
-                    <td>Cleanser B</td>
-                    <td>2</td>
+                          <td>
+                            <span
+                              className={
+                                order.Stock_Status === "Reserved"
+                                  ? "operator-status operator-green-status"
+                                  : "operator-status operator-red-status"
+                              }
+                            >
+                              {order.Stock_Status || "-"}
+                            </span>
+                          </td>
 
-                    <td>
-                    25/09/2026
-                    <br />
-                    09:50 AM
-                    </td>
+                          <td>
+                            <span className="operator-status operator-blue-status">
+                              {order.Order_Status}
+                            </span>
+                          </td>
 
-                    <td>
-                    <span className="operator-status operator-green-status">
-                        Reserved
-                    </span>
-                    </td>
+                         <td>
+                            {order.Order_Status === "Processing" && (
+                              <button
+                                className="operator-action-btn"
+                                onClick={() => handleStartPreparing(order)}
+                                disabled={order.Stock_Status !== "Reserved"}
+                              >
+                                Start Preparing
+                              </button>
+                            )}
 
-                    <td>
-                    <span className="operator-status operator-yellow-status">
-                        Preparing
-                    </span>
-                    </td>
+                            {order.Order_Status === "Preparing" && (
+                              <button
+                                className="operator-action-btn"
+                                onClick={() => handleMarkPrepared(order)}
+                              >
+                                Mark Prepared
+                              </button>
+                            )}
 
-                    <td>
-                    <button className="operator-action-btn">
-                        Mark Prepared
-                    </button>
-                    </td>
+                            {order.Order_Status === "Prepared" && (
+                              <button
+                                className="operator-action-btn"
+                                onClick={() => handleSendToQC(order)}
+                              >
+                                Send to QC
+                              </button>
+                            )}
 
-                </tr>
+                            {order.Order_Status === "Waiting QC" && (
+                              <button
+                                className="operator-action-btn"
+                                disabled
+                                style={{
+                                  backgroundColor: "#d1d5db",
+                                  color: "#6b7280",
+                                  cursor: "not-allowed",
+                                }}
+                              >
+                                Sent to QC
+                              </button>
+                            )}
 
+                            {order.Order_Status === "Hold" && (
+                              <button
+                                className="operator-action-btn disabled-btn"
+                                disabled
+                              >
+                                Waiting Stock
+                              </button>
+                            )}
+                          </td>
 
-                <tr>
-
-                    <td>ORD1067</td>
-                    <td>Hana</td>
-                    <td>Toner E</td>
-                    <td>3</td>
-
-                    <td>
-                    25/09/2026
-                    <br />
-                    09:25 AM
-                    </td>
-
-                    <td>
-                    <span className="operator-status operator-green-status">
-                        Reserved
-                    </span>
-                    </td>
-
-                    <td>
-                    <span className="operator-status operator-green-status">
-                        Prepared
-                    </span>
-                    </td>
-
-                    <td>
-                    <button className="operator-action-btn">
-                        Send to QC
-                    </button>
-                    </td>
-
-                </tr>
-
-
-                <tr>
-
-                    <td>ORD1066</td>
-                    <td>Amir</td>
-                    <td>Product C</td>
-                    <td>5</td>
-
-                    <td>
-                    25/09/2026
-                    <br />
-                    09:15 AM
-                    </td>
-
-                    <td>
-                    <span className="operator-status operator-red-status">
-                        Insufficient
-                    </span>
-                    </td>
-
-                    <td>
-                    <span className="operator-status operator-red-status">
-                        Hold
-                    </span>
-                    </td>
-
-                    <td>
-                    <button
-                        className="operator-action-btn disabled-btn"
-                        disabled
-                    >
-                        Waiting Stock
-                    </button>
-                    </td>
-
-                </tr>
-
+                        </tr>
+                      );
+                    })
+                  ) : (
+                    <tr>
+                      <td
+                        colSpan="8"
+                        style={{ textAlign: "center" }}
+                      >
+                        No orders currently being processed.
+                      </td>
+                    </tr>
+                  )}
                 </tbody>
 
             </table>
@@ -1525,11 +1940,18 @@ const formatExcelDate = (value) => {
             <div className="operator-topbar">
 
             <div>
-                <h1>Inventory</h1>
+              <h1>Inventory</h1>
 
-                <p>
+              <p>
                 Check current stock availability for order processing
-                </p>
+              </p>
+
+              <button
+                className="operator-action-btn"
+                onClick={syncInventoryToFirebase}
+              >
+                Sync Inventory
+              </button>
             </div>
 
 
@@ -1555,7 +1977,7 @@ const formatExcelDate = (value) => {
 
             <div className="operator-card">
                 <p>Total Products</p>
-                <h2>48</h2>
+                <h2>{totalProducts}</h2>
 
                 <span className="operator-pink">
                 Active products
@@ -1565,7 +1987,7 @@ const formatExcelDate = (value) => {
 
             <div className="operator-card">
                 <p>Available Stock</p>
-                <h2>2,450</h2>
+                <h2>{totalAvailableStock}</h2>
 
                 <span className="operator-green">
                 Ready for orders
@@ -1575,7 +1997,7 @@ const formatExcelDate = (value) => {
 
             <div className="operator-card">
                 <p>Low Stock</p>
-                <h2>7</h2>
+                <h2>{lowStockCount}</h2>
 
                 <span className="operator-yellow">
                 Monitor closely
@@ -1585,7 +2007,7 @@ const formatExcelDate = (value) => {
 
             <div className="operator-card">
                 <p>Out of Stock</p>
-                <h2>3</h2>
+                <h2>{outOfStockCount}</h2>
 
                 <span className="operator-red">
                 Cannot process orders
@@ -1603,90 +2025,106 @@ const formatExcelDate = (value) => {
 
                 <h3>Stock Overview</h3>
 
+                <div className="operator-inventory-filters">
+
+                  <input
+                    type="text"
+                    placeholder="Search Product ID or Product Name..."
+                    value={inventorySearch}
+                    onChange={(e) =>
+                      setInventorySearch(e.target.value)
+                    }
+                  />
+
+                  <select
+                    value={stockFilter}
+                    onChange={(e) =>
+                      setStockFilter(e.target.value)
+                    }
+                  >
+                    <option value="All">All Stock Status</option>
+                    <option value="Available">Available</option>
+                    <option value="Low Stock">Low Stock</option>
+                    <option value="Critical">Critical</option>
+                    <option value="Out of Stock">Out of Stock</option>
+                  </select>
+
+                </div>
+
                 <div className="operator-inventory-list">
+                  {filteredInventory.map((item) => {
+                    const available = Number(item.Available_Stock || 0);
+                    const reorder = Number(item.Reorder_Level || 0);
+                    const safety = Number(item.Safety_Stock || 0);
 
-                <div className="operator-inventory-item">
+                    let statusText = "Available";
+                    let statusClass = "operator-green-status";
 
-                    <div>
-                    <strong>Serum A</strong>
-                    <p>PRD001</p>
-                    </div>
+                    if (available <= 0) {
+                      statusText = "Out of Stock";
+                      statusClass = "operator-red-status";
+                    } else if (available <= safety) {
+                      statusText = "Critical";
+                      statusClass = "operator-red-status";
+                    } else if (available <= reorder) {
+                      statusText = "Low Stock";
+                      statusClass = "operator-yellow-status";
+                    }
 
-                    <span className="operator-status operator-green-status">
-                    120 Available
-                    </span>
+                    return (
+                      <div
+                        className="operator-inventory-item"
+                        key={item.Product_Code}
+                      >
+                        <div>
+                          <strong>{item.Product_Name}</strong>
+                          <p>{item.Product_Code}</p>
+                        </div>
 
-                </div>
-
-
-                <div className="operator-inventory-item">
-
-                    <div>
-                    <strong>Cleanser B</strong>
-                    <p>PRD002</p>
-                    </div>
-
-                    <span className="operator-status operator-yellow-status">
-                    35 Low Stock
-                    </span>
-
-                </div>
-
-
-                <div className="operator-inventory-item">
-
-                    <div>
-                    <strong>Product C</strong>
-                    <p>PRD003</p>
-                    </div>
-
-                    <span className="operator-status operator-red-status">
-                    8 Critical
-                    </span>
-
+                        <span
+                          className={`operator-status ${statusClass}`}
+                        >
+                          {available} {statusText}
+                        </span>
+                      </div>
+                    );
+                    })}
                 </div>
 
                 </div>
 
-            </div>
 
+                <div className="operator-panel">
 
-            <div className="operator-panel">
+                  <h3>Inventory Alerts</h3>
 
-                <h3>Inventory Alerts</h3>
+                  <div className="operator-alert operator-danger-alert">
+                    <strong>Critical Stock</strong>
+                    <p>
+                      Products with critically low stock require attention.
+                    </p>
+                  </div>
 
-                <div className="operator-alert operator-danger-alert">
-                <strong>Critical Stock</strong>
+                  <div className="operator-alert operator-warning-alert">
+                    <strong>Low Stock Warning</strong>
+                    <p>
+                      Some products are approaching their reorder level.
+                    </p>
+                  </div>
 
-                <p>
-                    Product C has only 8 units available.
-                </p>
+                  <div className="operator-alert operator-success-alert">
+                    <strong>Stock Stable</strong>
+                    <p>
+                      Other products currently have sufficient stock.
+                    </p>
+                  </div>
+
+                </div>
+
                 </div>
 
 
-                <div className="operator-alert operator-warning-alert">
-                <strong>Low Stock Warning</strong>
-
-                <p>
-                    Cleanser B is approaching minimum stock level.
-                </p>
-                </div>
-
-
-                <div className="operator-alert operator-success-alert">
-                <strong>Stock Stable</strong>
-
-                <p>
-                    Most products currently have sufficient stock.
-                </p>
-                </div>
-
-            </div>
-
-            </div>
-
-
-            {/* INVENTORY TABLE */}
+                {/* INVENTORY TABLE */}
 
             <div className="operator-panel">
 
@@ -1705,35 +2143,41 @@ const formatExcelDate = (value) => {
 
             <div className="operator-inventory-filters">
 
-                <input
+              <input
                 type="text"
                 placeholder="Search Product ID or Product Name..."
-                />
+                value={inventorySearch}
+                onChange={(e) =>
+                  setInventorySearch(e.target.value)
+                }
+              />
 
-
-                <select>
-
-                <option>
-                    All Stock Status
+              <select
+                value={stockFilter}
+                onChange={(e) =>
+                  setStockFilter(e.target.value)
+                }
+              >
+                <option value="All">
+                  All Stock Status
                 </option>
 
-                <option>
-                    In Stock
+                <option value="Available">
+                  Available
                 </option>
 
-                <option>
-                    Low Stock
+                <option value="Low Stock">
+                  Low Stock
                 </option>
 
-                <option>
-                    Critical
+                <option value="Critical">
+                  Critical
                 </option>
 
-                <option>
-                    Out of Stock
+                <option value="Out of Stock">
+                  Out of Stock
                 </option>
-
-                </select>
+              </select>
 
             </div>
 
@@ -1757,116 +2201,48 @@ const formatExcelDate = (value) => {
 
 
                 <tbody>
+                  {filteredInventory.map((item) => {
+                    const current = Number(item.Current_Stock || 0);
+                    const reserved = Number(item.Reserved_Stock || 0);
+                    const available = Number(item.Available_Stock || 0);
+                    const reorder = Number(item.Reorder_Level || 0);
+                    const safety = Number(item.Safety_Stock || 0);
 
-                <tr>
-                    <td>PRD001</td>
-                    <td>Serum A</td>
-                    <td>150</td>
-                    <td>30</td>
-                    <td>120</td>
-                    <td>40</td>
+                    let statusText = "In Stock";
+                    let statusClass = "operator-green-status";
 
-                    <td>
-                    <span className="operator-status operator-green-status">
-                        In Stock
-                    </span>
-                    </td>
+                    if (available <= 0) {
+                      statusText = "Out of Stock";
+                      statusClass = "operator-red-status";
+                    } else if (available <= safety) {
+                      statusText = "Critical";
+                      statusClass = "operator-red-status";
+                    } else if (available <= reorder) {
+                      statusText = "Low Stock";
+                      statusClass = "operator-yellow-status";
+                    }
 
-                    <td>
-                    25/09/2026
-                    <br />
-                    10:00 AM
-                    </td>
-                </tr>
+                    return (
+                      <tr key={item.Product_Code}>
+                        <td>{item.Product_Code}</td>
+                        <td>{item.Product_Name}</td>
+                        <td>{current}</td>
+                        <td>{reserved}</td>
+                        <td>{available}</td>
+                        <td>{reorder}</td>
 
+                        <td>
+                          <span className={`operator-status ${statusClass}`}>
+                            {statusText}
+                          </span>
+                        </td>
 
-                <tr>
-                    <td>PRD002</td>
-                    <td>Cleanser B</td>
-                    <td>50</td>
-                    <td>15</td>
-                    <td>35</td>
-                    <td>40</td>
-
-                    <td>
-                    <span className="operator-status operator-yellow-status">
-                        Low Stock
-                    </span>
-                    </td>
-
-                    <td>
-                    25/09/2026
-                    <br />
-                    09:50 AM
-                    </td>
-                </tr>
-
-
-                <tr>
-                    <td>PRD003</td>
-                    <td>Product C</td>
-                    <td>12</td>
-                    <td>4</td>
-                    <td>8</td>
-                    <td>30</td>
-
-                    <td>
-                    <span className="operator-status operator-red-status">
-                        Critical
-                    </span>
-                    </td>
-
-                    <td>
-                    25/09/2026
-                    <br />
-                    09:45 AM
-                    </td>
-                </tr>
-
-
-                <tr>
-                    <td>PRD004</td>
-                    <td>Product D</td>
-                    <td>0</td>
-                    <td>0</td>
-                    <td>0</td>
-                    <td>25</td>
-
-                    <td>
-                    <span className="operator-status operator-red-status">
-                        Out of Stock
-                    </span>
-                    </td>
-
-                    <td>
-                    25/09/2026
-                    <br />
-                    09:30 AM
-                    </td>
-                </tr>
-
-
-                <tr>
-                    <td>PRD005</td>
-                    <td>Toner E</td>
-                    <td>200</td>
-                    <td>25</td>
-                    <td>175</td>
-                    <td>50</td>
-
-                    <td>
-                    <span className="operator-status operator-green-status">
-                        In Stock
-                    </span>
-                    </td>
-
-                    <td>
-                    25/09/2026
-                    <br />
-                    09:20 AM
-                    </td>
-                </tr>
-
+                        <td>
+                          {item.Stock_Month}/{item.Stock_Year}
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
 
             </table>

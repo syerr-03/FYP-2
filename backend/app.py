@@ -291,5 +291,53 @@ def predict_demand():
         }), 500
 
 
+@app.route("/inventory", methods=["GET"])
+def get_inventory():
+    try:
+        file_path = "data/FYP_Master_All_43_Products_Related.xlsx"
+
+        df = pd.read_excel(
+            file_path,
+            sheet_name="Stock_Model_Input"
+        )
+
+        df["Year"] = pd.to_numeric(df["Year"], errors="coerce")
+        df["Month_Number"] = pd.to_numeric(df["Month_Number"], errors="coerce")
+
+        df = df.sort_values(
+            by=["Product_Code", "Year", "Month_Number"]
+        )
+
+        latest_stock = (
+            df.groupby("Product_Code", as_index=False)
+            .tail(1)
+        )
+
+        inventory = []
+
+        for _, row in latest_stock.iterrows():
+            current_stock = int(row.get("Ending_Stock", 0) or 0)
+
+            inventory.append({
+                "Product_Code": str(row.get("Product_Code", "")),
+                "Product_Name": str(row.get("Product_Name", "")),
+                "Current_Stock": current_stock,
+                "Reserved_Stock": 0,
+                "Available_Stock": current_stock,
+                "Reorder_Level": int(row.get("Reorder_Level", 0) or 0),
+                "Safety_Stock": int(row.get("Safety_Stock", 0) or 0),
+                "Lead_Time_Days": int(row.get("Lead_Time_Days", 0) or 0),
+                "Stock_Year": int(row.get("Year", 0) or 0),
+                "Stock_Month": int(row.get("Month_Number", 0) or 0),
+            })
+
+        return jsonify(inventory)
+
+    except Exception as e:
+        return jsonify({
+            "error": str(e)
+        }), 500
+
+
 if __name__ == "__main__":
     app.run(debug=True)
