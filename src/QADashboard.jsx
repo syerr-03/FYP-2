@@ -1,9 +1,473 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import "./QADashboard.css";
+import { db } from "./firebase";
+import {
+  collection,
+  onSnapshot,
+  getDocs,
+  addDoc,
+  serverTimestamp,
+} from "firebase/firestore";
 
 function QADashboard({ onLogout }) {
-  const [activePage, setActivePage] = useState("dashboard");
+  const [activePage, setActivePage] = useState("analytics");
   const [selectedIssue, setSelectedIssue] = useState(null);
+  const [qaOrders, setQaOrders] = useState([]);
+  const [qaProducts, setQaProducts] = useState([]);
+  const [topProductLimit, setTopProductLimit] = useState(3);
+  const [rootCause, setRootCause] = useState("");
+  const [correctiveAction, setCorrectiveAction] = useState("");
+  const [assignedTo, setAssignedTo] = useState("");
+  const [targetDate, setTargetDate] = useState("");
+  const [priority, setPriority] = useState("Medium");
+  const [actionStatus, setActionStatus] = useState("Open");
+  const [correctiveActions, setCorrectiveActions] = useState([]);
+
+    useEffect(() => {
+    const unsubscribe = onSnapshot(
+        collection(db, "orders"),
+        (snapshot) => {
+        const orders = snapshot.docs.map((doc) => ({
+            id: doc.id,
+            ...doc.data(),
+        }));
+
+        setQaOrders(orders);
+        },
+        (error) => {
+        console.error("Error loading QA data:", error);
+        }
+    );
+
+    const loadProducts = async () => {
+        try {
+        const snapshot = await getDocs(collection(db, "inventory"));
+
+        const products = snapshot.docs.map((doc) => ({
+            id: doc.id,
+            ...doc.data(),
+        }));
+
+        setQaProducts(products);
+        } catch (error) {
+        console.error("Error loading products:", error);
+        }
+    };
+
+    loadProducts();
+
+    return () => unsubscribe();
+    }, []);
+
+    useEffect(() => {
+  const unsubscribe = onSnapshot(
+    collection(db, "corrective_actions"),
+    (snapshot) => {
+      const actions = snapshot.docs.map((doc) => ({
+        id: doc.id,
+        ...doc.data(),
+      }));
+
+      setCorrectiveActions(actions);
+    },
+    (error) => {
+      console.error("Error loading corrective actions:", error);
+    }
+  );
+
+  return () => unsubscribe();
+}, []);
+
+    const qcIssueOrders = qaOrders.filter(
+        (order) =>
+            order.QC_Result === "Rejected" ||
+            order.QC_Reject_Note
+        );
+
+        const deliveryIssueOrders = qaOrders.filter(
+        (order) =>
+            order.Delivery_Issue === true ||
+            [
+            "Delivery Delayed",
+            "Not Received",
+            "Returned",
+            "Canceled",
+            ].includes(order.Delivery_Status)
+        );
+
+        const totalQualityIssues =
+        qcIssueOrders.length + deliveryIssueOrders.length;
+
+        const affectedProducts = new Set(
+        [...qcIssueOrders, ...deliveryIssueOrders].flatMap(
+            (order) =>
+            (order.items || []).map(
+                (item) => item.Product_Name
+            )
+        )
+        ).size;
+
+        const productIssueMap = {};
+
+qaOrders.forEach((order) => {
+  (order.items || []).forEach((item) => {
+    const productName = item.Product_Name || "Unknown Product";
+
+    if (!productIssueMap[productName]) {
+      productIssueMap[productName] = {
+        product: productName,
+        totalIssues: 0,
+        qcIssues: 0,
+        deliveryIssues: 0,
+        issueTypes: {},
+      };
+    }
+
+   
+
+    if (
+      order.QC_Result === "Rejected" ||
+      order.QC_Reject_Note
+    ) {
+      productIssueMap[productName].qcIssues += 1;
+
+      productIssueMap[productName].totalIssues += 1;
+
+      const issueType =
+        order.QC_Reject_Note || "QC Inspection Issue";
+
+      productIssueMap[productName].issueTypes[issueType] =
+        (productIssueMap[productName].issueTypes[issueType] || 0) + 1;
+    }
+
+    if (
+      order.Delivery_Issue === true ||
+      [
+        "Delivery Delayed",
+        "Not Received",
+        "Returned",
+        "Canceled",
+      ].includes(order.Delivery_Status)
+    ) {
+      productIssueMap[productName].deliveryIssues += 1;
+
+      productIssueMap[productName].totalIssues += 1;
+      const issueType =
+        order.Delivery_Issue_Type ||
+        order.Delivery_Status ||
+        "Delivery Issue";
+
+      productIssueMap[productName].issueTypes[issueType] =
+        (productIssueMap[productName].issueTypes[issueType] || 0) + 1;
+    }
+  });
+});
+
+const problematicProducts = Object.values(productIssueMap)
+  .map((product) => {
+    const mainIssue =
+      Object.entries(product.issueTypes)
+        .sort((a, b) => b[1] - a[1])[0]?.[0] || "-";
+
+    return {
+      ...product,
+      mainIssue,
+    };
+  })
+  .sort((a, b) => b.totalIssues - a.totalIssues);
+
+  const topProblematicProducts =
+  problematicProducts.slice(0, topProductLimit);
+
+  const allProductNames = [
+  ...new Set(
+    qaProducts
+      .map(
+        (product) =>
+          product.Product_Name ||
+          product.productName ||
+          product.Name
+      )
+      .filter(Boolean)
+  ),
+];
+
+const allProductIssueRanking = allProductNames
+  .map((productName) => {
+    const issueData = productIssueMap[productName];
+
+    return {
+      product: productName,
+      totalIssues: issueData?.totalIssues || 0,
+      qcIssues: issueData?.qcIssues || 0,
+      deliveryIssues: issueData?.deliveryIssues || 0,
+    };
+  })
+  .sort((a, b) => b.totalIssues - a.totalIssues);
+
+
+const monthlyIssueMap = {};
+
+const addMonthlyIssue = (dateValue) => {
+  if (!dateValue || dateValue === "-") return;
+
+  const date = new Date(dateValue);
+
+  if (isNaN(date)) return;
+
+  const key = `${date.getFullYear()}-${date.getMonth()}`;
+
+  if (!monthlyIssueMap[key]) {
+    monthlyIssueMap[key] = {
+      year: date.getFullYear(),
+      month: date.getMonth(),
+      total: 0,
+    };
+  }
+
+  monthlyIssueMap[key].total += 1;
+};
+
+
+qcIssueOrders.forEach((order) => {
+  addMonthlyIssue(
+    order.QC_Rejected_At ||
+    order.QC_Completed_At
+  );
+});
+
+
+deliveryIssueOrders.forEach((order) => {
+  addMonthlyIssue(
+    order.Delivery_Issue_At ||
+    order.Delivery_Updated_At
+  );
+});
+
+
+const monthlyQualityTrend = Object.values(monthlyIssueMap)
+  .sort((a, b) => {
+    const dateA = new Date(a.year, a.month);
+    const dateB = new Date(b.year, b.month);
+
+    return dateA - dateB;
+  })
+  .slice(-6)
+  .map((item) => ({
+    ...item,
+
+    label: new Date(
+      item.year,
+      item.month
+    ).toLocaleString("en-US", {
+      month: "short",
+    }),
+  }));
+
+
+const maxMonthlyIssues = Math.max(
+  ...monthlyQualityTrend.map((item) => item.total),
+  1
+);
+
+const passedInspections = qaOrders.filter(
+  (order) =>
+    order.QC_Result === "Passed" ||
+    order.QC_Result === "Passed (After Recheck)"
+).length;
+
+const rejectedInspections = qaOrders.filter(
+  (order) => order.QC_Result === "Rejected"
+).length;
+
+const recheckInspections = qaOrders.filter(
+  (order) => order.QC_Status === "Recheck"
+).length;
+
+const totalInspections =
+  passedInspections +
+  rejectedInspections +
+  recheckInspections;
+
+const passedRate =
+  totalInspections > 0
+    ? (passedInspections / totalInspections) * 100
+    : 0;
+
+const rejectedRate =
+  totalInspections > 0
+    ? (rejectedInspections / totalInspections) * 100
+    : 0;
+
+const recheckRate =
+  totalInspections > 0
+    ? (recheckInspections / totalInspections) * 100
+    : 0;
+
+const productPerformanceMap = {};
+
+qaOrders.forEach((order) => {
+  (order.items || []).forEach((item) => {
+    const productName =
+      item.Product_Name || "Unknown Product";
+
+    if (!productPerformanceMap[productName]) {
+      productPerformanceMap[productName] = {
+        product: productName,
+        inspected: 0,
+        passed: 0,
+        rejected: 0,
+        recheck: 0,
+        issues: 0,
+      };
+    }
+
+    const hasInspection =
+      order.QC_Status ||
+      order.QC_Result ||
+      order.QC_Checklist ||
+      order.QC_Final_Checklist;
+
+    if (hasInspection) {
+      productPerformanceMap[productName].inspected += 1;
+    }
+
+    if (
+      order.QC_Result === "Passed" ||
+      order.QC_Result === "Passed (After Recheck)"
+    ) {
+      productPerformanceMap[productName].passed += 1;
+    }
+
+    if (order.QC_Result === "Rejected") {
+      productPerformanceMap[productName].rejected += 1;
+    }
+
+    if (order.QC_Status === "Recheck") {
+      productPerformanceMap[productName].recheck += 1;
+    }
+
+    if (
+      order.QC_Result === "Rejected" ||
+      order.QC_Reject_Note ||
+      order.Delivery_Issue === true ||
+      [
+        "Delivery Delayed",
+        "Not Received",
+        "Returned",
+        "Canceled",
+      ].includes(order.Delivery_Status)
+    ) {
+      productPerformanceMap[productName].issues += 1;
+    }
+  });
+});
+
+const productQualityPerformance =
+  Object.values(productPerformanceMap)
+    .map((product) => ({
+      ...product,
+      passRate:
+        product.inspected > 0
+          ? (product.passed / product.inspected) * 100
+          : 0,
+    }))
+    .sort((a, b) => b.issues - a.issues);
+
+    const recurringIssues = Object.values(productIssueMap)
+  .flatMap((product) =>
+    Object.entries(product.issueTypes)
+      .filter(([, count]) => count >= 2)
+      .map(([issue, count]) => ({
+        product: product.product,
+        issue: issue,
+        cases: count,
+
+        severity:
+          count >= 5
+            ? "High"
+            : count >= 3
+            ? "Medium"
+            : "Low",
+      }))
+  )
+  .sort((a, b) => b.cases - a.cases);
+
+  const totalRecurringIssues = recurringIssues.length;
+
+const highSeverityRecurring = recurringIssues.filter(
+  (item) => item.severity === "High"
+).length;
+
+const mediumSeverityRecurring = recurringIssues.filter(
+  (item) => item.severity === "Medium"
+).length;
+
+const lowSeverityRecurring = recurringIssues.filter(
+  (item) => item.severity === "Low"
+).length;
+
+const handleSaveCorrectiveAction = async () => {
+  if (
+    !selectedIssue ||
+    !rootCause.trim() ||
+    !correctiveAction.trim() ||
+    !assignedTo ||
+    !targetDate
+  ) {
+    alert("Please complete all required fields.");
+    return;
+  }
+
+  try {
+    await addDoc(collection(db, "corrective_actions"), {
+      issueId: selectedIssue.issueId,
+      product: selectedIssue.product,
+      issue: selectedIssue.issue,
+      cases: selectedIssue.cases,
+      trend: selectedIssue.trend,
+      severity: selectedIssue.severity,
+
+      rootCause: rootCause.trim(),
+      correctiveAction: correctiveAction.trim(),
+      assignedTo,
+      targetDate,
+      priority,
+      status: actionStatus,
+      remarks: remarks.trim(),
+
+      createdAt: serverTimestamp(),
+    });
+
+    alert("Corrective action saved successfully.");
+
+    setRootCause("");
+    setCorrectiveAction("");
+    setAssignedTo("");
+    setTargetDate("");
+    setPriority("Medium");
+    setActionStatus("Open");
+    setRemarks("");
+    setSelectedIssue(null);
+
+  } catch (error) {
+    console.error("Error saving corrective action:", error);
+    alert("Failed to save corrective action.");
+  }
+};
+
+const openCorrectiveActions = correctiveActions.filter(
+  (action) => action.status === "Open"
+).length;
+
+const inProgressCorrectiveActions = correctiveActions.filter(
+  (action) => action.status === "In Progress"
+).length;
+
+const completedCorrectiveActions = correctiveActions.filter(
+  (action) => action.status === "Completed"
+).length;
+
 
   return (
     <div className="qa-layout">
@@ -18,13 +482,7 @@ function QADashboard({ onLogout }) {
 
           <nav>
 
-            <a
-              className={activePage === "dashboard" ? "qa-active" : ""}
-              onClick={() => setActivePage("dashboard")}
-            >
-              Dashboard
-            </a>
-
+    
             <a
               className={activePage === "analytics" ? "qa-active" : ""}
               onClick={() => setActivePage("analytics")}
@@ -32,13 +490,7 @@ function QADashboard({ onLogout }) {
               Quality Analytics
             </a>
 
-            <a
-              className={activePage === "defects" ? "qa-active" : ""}
-              onClick={() => setActivePage("defects")}
-            >
-              Defect Monitoring
-            </a>
-
+        
             <a
               className={activePage === "recurring" ? "qa-active" : ""}
               onClick={() => setActivePage("recurring")}
@@ -109,46 +561,46 @@ function QADashboard({ onLogout }) {
 
             <div className="qa-summary-grid">
 
-              <div className="qa-card">
-                <p>Total Inspections</p>
-                <h2>186</h2>
+                <div className="qa-card">
+                    <p>Total Quality Issues</p>
+                    <h2>{totalQualityIssues}</h2>
 
-                <span className="qa-green">
-                  This month
-                </span>
-              </div>
-
-
-              <div className="qa-card">
-                <p>Defect Rate</p>
-                <h2>6.8%</h2>
-
-                <span className="qa-red">
-                  Requires monitoring
-                </span>
-              </div>
+                    <span className="qa-red">
+                    QC + Delivery issues
+                    </span>
+                </div>
 
 
-              <div className="qa-card">
-                <p>Recurring Issues</p>
-                <h2>5</h2>
+                <div className="qa-card">
+                    <p>QC Issues</p>
+                    <h2>{qcIssueOrders.length}</h2>
 
-                <span className="qa-yellow">
-                  Investigation needed
-                </span>
-              </div>
+                    <span className="qa-pink">
+                    Inspection related
+                    </span>
+                </div>
 
 
-              <div className="qa-card">
-                <p>Open Actions</p>
-                <h2>3</h2>
+                <div className="qa-card">
+                    <p>Delivery Issues</p>
+                    <h2>{deliveryIssueOrders.length}</h2>
 
-                <span className="qa-pink">
-                  Corrective actions
-                </span>
-              </div>
+                    <span className="qa-yellow">
+                    Delivery related
+                    </span>
+                </div>
 
-            </div>
+
+                <div className="qa-card">
+                    <p>Products Affected</p>
+                    <h2>{affectedProducts}</h2>
+
+                    <span className="qa-blue">
+                    Products with issues
+                    </span>
+                </div>
+
+                </div>
 
 
             {/* TREND + ALERT */}
@@ -241,82 +693,74 @@ function QADashboard({ onLogout }) {
                 </thead>
 
 
-                <tbody>
+               <tbody>
+                {recurringIssues.length > 0 ? (
+                    recurringIssues.map((item, index) => (
+                    <tr key={`${item.product}-${item.issue}`}>
 
-                  <tr>
+                        <td>{`RI${String(index + 1).padStart(3, "0")}`}</td>
 
-                    <td>Damaged Packaging</td>
-                    <td>Product AA</td>
-                    <td>12</td>
-                    <td>Increasing</td>
+                        <td>{item.product}</td>
 
-                    <td>
-                      <span className="qa-status qa-red-status">
-                        High
-                      </span>
+                        <td>{item.issue}</td>
+
+                        <td>{item.cases}</td>
+
+                        <td>
+                        <span className="qa-trend-stable">
+                            Recurring
+                        </span>
+                        </td>
+
+                        <td>
+                        <span
+                            className={`qa-status ${
+                            item.severity === "High"
+                                ? "qa-red-status"
+                                : item.severity === "Medium"
+                                ? "qa-yellow-status"
+                                : "qa-blue-status"
+                            }`}
+                        >
+                            {item.severity}
+                        </span>
+                        </td>
+
+                        <td>
+                        <span className="qa-status qa-red-status">
+                            Investigation Required
+                        </span>
+                        </td>
+
+                        <td>
+                        <button
+                            className="qa-action-btn"
+                            onClick={() => {
+                            setSelectedIssue({
+                                issueId: `RI${String(index + 1).padStart(3, "0")}`,
+                                product: item.product,
+                                issue: item.issue,
+                                cases: item.cases,
+                                trend: "Recurring",
+                                severity: item.severity,
+                            });
+
+                            setActivePage("corrective");
+                            }}
+                        >
+                            Investigate
+                        </button>
+                        </td>
+
+                    </tr>
+                    ))
+                ) : (
+                    <tr>
+                    <td colSpan="8">
+                        No recurring quality issues detected.
                     </td>
-
-                    <td>
-                      <button
-                        className="qa-action-btn"
-                        onClick={() => setActivePage("recurring")}
-                      >
-                        Review
-                      </button>
-                    </td>
-
-                  </tr>
-
-
-                  <tr>
-
-                    <td>Wrong Quantity</td>
-                    <td>Serum A</td>
-                    <td>5</td>
-                    <td>Stable</td>
-
-                    <td>
-                      <span className="qa-status qa-yellow-status">
-                        Medium
-                      </span>
-                    </td>
-
-                    <td>
-                      <button
-                        className="qa-action-btn"
-                        onClick={() => setActivePage("recurring")}
-                      >
-                        Review
-                      </button>
-                    </td>
-
-                  </tr>
-
-
-                  <tr>
-
-                    <td>Incorrect Product</td>
-                    <td>Cleanser B</td>
-                    <td>2</td>
-                    <td>Decreasing</td>
-
-                    <td>
-                      <span className="qa-status qa-green-status">
-                        Low
-                      </span>
-                    </td>
-
-                    <td>
-                      <button
-                        className="qa-action-btn"
-                        onClick={() => setActivePage("recurring")}
-                      >
-                        Review
-                      </button>
-                    </td>
-
-                  </tr>
-
+                    </tr>
+                )}
                 </tbody>
 
               </table>
@@ -524,43 +968,127 @@ function QADashboard({ onLogout }) {
             <div className="qa-summary-grid">
 
             <div className="qa-card">
-                <p>Total Inspections</p>
-                <h2>186</h2>
-
-                <span className="qa-green">
-                This month
-                </span>
-            </div>
-
-
-            <div className="qa-card">
-                <p>Pass Rate</p>
-                <h2>82.8%</h2>
-
-                <span className="qa-green">
-                154 passed
-                </span>
-            </div>
-
-
-            <div className="qa-card">
-                <p>Defect Rate</p>
-                <h2>10.8%</h2>
-
+                <p>Total Quality Issues</p>
+                <h2>{totalQualityIssues}</h2>
                 <span className="qa-red">
-                20 rejected
+                QC + Delivery issues
                 </span>
             </div>
-
 
             <div className="qa-card">
-                <p>Recheck Rate</p>
-                <h2>6.4%</h2>
-
-                <span className="qa-yellow">
-                12 rechecks
+                <p>QC Issues</p>
+                <h2>{qcIssueOrders.length}</h2>
+                <span className="qa-pink">
+                Inspection related
                 </span>
             </div>
+
+            <div className="qa-card">
+                <p>Delivery Issues</p>
+                <h2>{deliveryIssueOrders.length}</h2>
+                <span className="qa-yellow">
+                Delivery related
+                </span>
+            </div>
+
+            <div className="qa-card">
+                <p>Products Affected</p>
+                <h2>{affectedProducts}</h2>
+                <span className="qa-blue">
+                Products with issues
+                </span>
+            </div>
+
+            </div>
+
+
+            <div className="qa-panel">
+
+            <div className="qa-section-header">
+                <div>
+                <h3>Quality Issues</h3>
+                <p className="qa-section-subtitle">
+                    Combined quality issues from QC inspection and delivery
+                </p>
+                </div>
+            </div>
+
+            <table>
+                <thead>
+                <tr>
+                    <th>Order ID</th>
+                    <th>Product</th>
+                    <th>Source</th>
+                    <th>Issue</th>
+                    <th>Date</th>
+                </tr>
+                </thead>
+
+                <tbody>
+                {[
+                    ...qcIssueOrders.map((order) => ({
+                    ...order,
+                    issueSource: "QC",
+                    issueText:
+                        order.QC_Reject_Note ||
+                        "QC Inspection Issue",
+                    issueDate:
+                        order.QC_Rejected_At ||
+                        order.QC_Completed_At ||
+                        "-",
+                    })),
+
+                    ...deliveryIssueOrders.map((order) => ({
+                    ...order,
+                    issueSource: "Delivery",
+                    issueText:
+                        order.Delivery_Issue_Type ||
+                        order.Delivery_Status ||
+                        "Delivery Issue",
+                    issueDate:
+                        order.Delivery_Issue_At ||
+                        order.Delivery_Updated_At ||
+                        "-",
+                    })),
+                ]
+                    .sort(
+                    (a, b) =>
+                        new Date(b.issueDate || 0) -
+                        new Date(a.issueDate || 0)
+                    )
+                    .map((order) => (
+                    <tr key={`${order.Order_ID}-${order.issueSource}`}>
+                        <td>{order.Order_ID}</td>
+
+                        <td>
+                        {(order.items || [])
+                            .map((item) => item.Product_Name)
+                            .join(", ") || "-"}
+                        </td>
+
+                        <td>
+                        <span
+                            className={`qa-status ${
+                            order.issueSource === "QC"
+                                ? "qa-pink-status"
+                                : "qa-yellow-status"
+                            }`}
+                        >
+                            {order.issueSource}
+                        </span>
+                        </td>
+
+                        <td>{order.issueText}</td>
+
+                        <td>
+                        {order.issueDate !== "-"
+                            ? new Date(order.issueDate).toLocaleString()
+                            : "-"}
+                        </td>
+                    </tr>
+                    ))}
+                </tbody>
+            </table>
 
             </div>
 
@@ -579,55 +1107,37 @@ function QADashboard({ onLogout }) {
 
                 <div className="qa-analytics-chart">
 
-                <div className="qa-analytics-bar-item">
-                    <div
-                    className="qa-analytics-bar"
-                    style={{ height: "42%" }}
-                    ></div>
-                    <span>Apr</span>
-                </div>
+                    {monthlyQualityTrend.length > 0 ? (
+                        monthlyQualityTrend.map((item) => (
+                        <div
+                            className="qa-analytics-bar-item"
+                            key={`${item.year}-${item.month}`}
+                        >
 
-                <div className="qa-analytics-bar-item">
-                    <div
-                    className="qa-analytics-bar"
-                    style={{ height: "55%" }}
-                    ></div>
-                    <span>May</span>
-                </div>
+                            <div
+                            className="qa-analytics-bar"
+                            style={{
+                                height: `${Math.max(
+                                (item.total / maxMonthlyIssues) * 100,
+                                8
+                                )}%`,
+                            }}
+                            title={`${item.label}: ${item.total} issues`}
+                            ></div>
 
-                <div className="qa-analytics-bar-item">
-                    <div
-                    className="qa-analytics-bar"
-                    style={{ height: "48%" }}
-                    ></div>
-                    <span>Jun</span>
-                </div>
+                            <strong>{item.total}</strong>
 
-                <div className="qa-analytics-bar-item">
-                    <div
-                    className="qa-analytics-bar"
-                    style={{ height: "70%" }}
-                    ></div>
-                    <span>Jul</span>
-                </div>
+                            <span>{item.label}</span>
 
-                <div className="qa-analytics-bar-item">
-                    <div
-                    className="qa-analytics-bar"
-                    style={{ height: "62%" }}
-                    ></div>
-                    <span>Aug</span>
-                </div>
+                        </div>
+                        ))
+                    ) : (
+                        <p className="qa-section-subtitle">
+                        No quality issue data available.
+                        </p>
+                    )}
 
-                <div className="qa-analytics-bar-item">
-                    <div
-                    className="qa-analytics-bar"
-                    style={{ height: "50%" }}
-                    ></div>
-                    <span>Sep</span>
-                </div>
-
-                </div>
+                    </div>
 
             </div>
 
@@ -646,13 +1156,13 @@ function QADashboard({ onLogout }) {
 
                     <div className="qa-outcome-header">
                     <span>Passed</span>
-                    <strong>154</strong>
+                    <strong>{passedInspections}</strong>
                     </div>
 
                     <div className="qa-outcome-progress">
                     <div
                         className="qa-outcome-fill qa-outcome-green"
-                        style={{ width: "82.8%" }}
+                        style={{ width: `${passedRate}%` }}
                     ></div>
                     </div>
 
@@ -663,13 +1173,13 @@ function QADashboard({ onLogout }) {
 
                     <div className="qa-outcome-header">
                     <span>Rejected</span>
-                    <strong>20</strong>
+                    <strong>{rejectedInspections}</strong>
                     </div>
 
                     <div className="qa-outcome-progress">
                     <div
                         className="qa-outcome-fill qa-outcome-red"
-                        style={{ width: "10.8%" }}
+                        style={{ width: `${rejectedRate}%` }}
                     ></div>
                     </div>
 
@@ -680,13 +1190,13 @@ function QADashboard({ onLogout }) {
 
                     <div className="qa-outcome-header">
                     <span>Recheck</span>
-                    <strong>12</strong>
+                    <strong>{recheckInspections}</strong>
                     </div>
 
                     <div className="qa-outcome-progress">
                     <div
                         className="qa-outcome-fill qa-outcome-yellow"
-                        style={{ width: "6.4%" }}
+                        style={{ width: `${recheckRate}%` }}
                     ></div>
                     </div>
 
@@ -730,67 +1240,44 @@ function QADashboard({ onLogout }) {
                 </thead>
 
                 <tbody>
+                    {productQualityPerformance.length > 0 ? (
+                        productQualityPerformance.map((product) => (
+                        <tr key={product.product}>
+                            <td>{product.product}</td>
 
-                <tr>
-                    <td>Product AA</td>
-                    <td>42</td>
-                    <td>24</td>
-                    <td>12</td>
-                    <td>6</td>
-                    <td>
-                    <span className="qa-status qa-red-status">
-                        18
-                    </span>
-                    </td>
-                    <td>57.1%</td>
-                </tr>
+                            <td>{product.inspected}</td>
 
+                            <td>{product.passed}</td>
 
-                <tr>
-                    <td>Serum A</td>
-                    <td>48</td>
-                    <td>43</td>
-                    <td>3</td>
-                    <td>2</td>
-                    <td>
-                    <span className="qa-status qa-yellow-status">
-                        5
-                    </span>
-                    </td>
-                    <td>89.6%</td>
-                </tr>
+                            <td>{product.rejected}</td>
 
+                            <td>{product.recheck}</td>
 
-                <tr>
-                    <td>Cleanser B</td>
-                    <td>39</td>
-                    <td>34</td>
-                    <td>3</td>
-                    <td>2</td>
-                    <td>
-                    <span className="qa-status qa-yellow-status">
-                        5
-                    </span>
-                    </td>
-                    <td>87.2%</td>
-                </tr>
+                            <td>
+                            <span
+                                className={`qa-status ${
+                                product.issues >= 5
+                                    ? "qa-red-status"
+                                    : product.issues >= 2
+                                    ? "qa-yellow-status"
+                                    : "qa-blue-status"
+                                }`}
+                            >
+                                {product.issues}
+                            </span>
+                            </td>
 
-
-                <tr>
-                    <td>Toner E</td>
-                    <td>57</td>
-                    <td>53</td>
-                    <td>2</td>
-                    <td>2</td>
-                    <td>
-                    <span className="qa-status qa-blue-status">
-                        4
-                    </span>
-                    </td>
-                    <td>93.0%</td>
-                </tr>
-
-                </tbody>
+                            <td>{product.passRate.toFixed(1)}%</td>
+                        </tr>
+                        ))
+                    ) : (
+                        <tr>
+                        <td colSpan="7">
+                            No product quality data available.
+                        </td>
+                        </tr>
+                    )}
+                    </tbody>
 
             </table>
 
@@ -801,76 +1288,164 @@ function QADashboard({ onLogout }) {
 
             <div className="qa-panel">
 
-            <div className="qa-section-header">
+  <div className="qa-section-header">
 
-                <div>
-                <h3>Top Problematic Products</h3>
+    <div>
+      <h3>Top Problematic Products</h3>
 
-                <p className="qa-section-subtitle">
-                    Products with the highest number of detected quality issues
-                </p>
-                </div>
+      <p className="qa-section-subtitle">
+        Products with the highest number of QC and delivery issues
+      </p>
+    </div>
+
+    <select
+      value={topProductLimit}
+      onChange={(e) =>
+        setTopProductLimit(Number(e.target.value))
+      }
+    >
+      <option value={3}>Top 3</option>
+      <option value={5}>Top 5</option>
+      <option value={10}>Top 10</option>
+    </select>
+
+  </div>
+
+
+  <div className="qa-problem-ranking">
+
+    {topProblematicProducts.length > 0 ? (
+
+      topProblematicProducts.map((product, index) => (
+
+        <div
+          className="qa-problem-ranking-item"
+          key={product.product}
+        >
+
+          <div className="qa-problem-rank">
+            {index + 1}
+          </div>
+
+          <div className="qa-problem-product-detail">
+
+            <strong>
+              {product.product}
+            </strong>
+
+            <span>
+              Main issue: {product.mainIssue}
+            </span>
+
+            <small>
+              QC: {product.qcIssues}
+              {" | "}
+              Delivery: {product.deliveryIssues}
+            </small>
+
+          </div>
+
+          <span
+            className={`qa-status ${
+              index === 0
+                ? "qa-red-status"
+                : index <= 2
+                ? "qa-yellow-status"
+                : "qa-blue-status"
+            }`}
+          >
+            {product.totalIssues} Issues
+          </span>
+
+        </div>
+
+      ))
+
+    ) : (
+
+      <p className="qa-section-subtitle">
+        No problematic products detected.
+      </p>
+
+    )}
+
+  </div>
+
+</div>
+
+{/* ALL PRODUCT ISSUE RANKING */}
+
+<div className="qa-panel">
+
+  <div className="qa-section-header">
+    <div>
+      <h3>All Product Issue Ranking</h3>
+
+      <p className="qa-section-subtitle">
+        Ranking of all products from highest to lowest number of quality issues
+      </p>
+    </div>
+  </div>
+
+  <div className="qa-product-ranking-chart">
+
+    {allProductIssueRanking.map((product, index) => {
+
+      const maxIssues =
+        allProductIssueRanking[0]?.totalIssues || 1;
+
+      const qcWidth =
+        (product.qcIssues / maxIssues) * 100;
+
+      const deliveryWidth =
+        (product.deliveryIssues / maxIssues) * 100;
+
+
+      return (
+        <div
+          className="qa-product-ranking-row"
+          key={product.product}
+        >
+
+          <div className="qa-product-ranking-label">
+            <span className="qa-product-ranking-number">
+              {index + 1}
+            </span>
+
+            <span className="qa-product-ranking-name">
+              {product.product}
+            </span>
+          </div>
+
+          <div className="qa-product-ranking-bar-area">
+
+            <div className="qa-product-ranking-track">
+
+              <div
+                className="qa-product-ranking-qc"
+                style={{ width: `${qcWidth}%` }}
+              ></div>
+
+              <div
+                className="qa-product-ranking-delivery"
+                style={{ width: `${deliveryWidth}%` }}
+              ></div>
 
             </div>
 
-            <div className="qa-problem-ranking">
-
-                <div className="qa-problem-ranking-item">
-
-                <div className="qa-problem-rank">
-                    1
-                </div>
-
-                <div className="qa-problem-product-detail">
-                    <strong>Product AA</strong>
-                    <span>Main issue: Damaged Packaging</span>
-                </div>
-
-                <span className="qa-status qa-red-status">
-                    18 Issues
-                </span>
-
-                </div>
-
-
-                <div className="qa-problem-ranking-item">
-
-                <div className="qa-problem-rank">
-                    2
-                </div>
-
-                <div className="qa-problem-product-detail">
-                    <strong>Serum A</strong>
-                    <span>Main issue: Quantity Mismatch</span>
-                </div>
-
-                <span className="qa-status qa-yellow-status">
-                    5 Issues
-                </span>
-
-                </div>
-
-
-                <div className="qa-problem-ranking-item">
-
-                <div className="qa-problem-rank">
-                    3
-                </div>
-
-                <div className="qa-problem-product-detail">
-                    <strong>Cleanser B</strong>
-                    <span>Main issue: Wrong Product</span>
-                </div>
-
-                <span className="qa-status qa-yellow-status">
-                    5 Issues
-                </span>
-
-                </div>
-
+            <div className="qa-product-ranking-count">
+              {product.totalIssues}
             </div>
 
-            </div>
+          </div>
+
+        </div>
+      );
+    })}
+
+  </div>
+
+</div>
 
         </>
         )}
@@ -912,46 +1487,43 @@ function QADashboard({ onLogout }) {
 
             <div className="qa-summary-grid">
 
-            <div className="qa-card">
-                <p>Active Defects</p>
-                <h2>8</h2>
+                <div className="qa-card">
+                    <p>Total Quality Issues</p>
+                    <h2>{totalQualityIssues}</h2>
 
-                <span className="qa-red">
-                Requires attention
-                </span>
-            </div>
+                    <span className="qa-red">
+                    QC + Delivery issues
+                    </span>
+                </div>
 
+                <div className="qa-card">
+                    <p>QC Issues</p>
+                    <h2>{qcIssueOrders.length}</h2>
 
-            <div className="qa-card">
-                <p>High Severity</p>
-                <h2>3</h2>
+                    <span className="qa-pink">
+                    Inspection related
+                    </span>
+                </div>
 
-                <span className="qa-red">
-                Immediate review
-                </span>
-            </div>
+                <div className="qa-card">
+                    <p>Delivery Issues</p>
+                    <h2>{deliveryIssueOrders.length}</h2>
 
+                    <span className="qa-yellow">
+                    Delivery related
+                    </span>
+                </div>
 
-            <div className="qa-card">
-                <p>Under Monitoring</p>
-                <h2>4</h2>
+                <div className="qa-card">
+                    <p>Products Affected</p>
+                    <h2>{affectedProducts}</h2>
 
-                <span className="qa-yellow">
-                Being observed
-                </span>
-            </div>
+                    <span className="qa-blue">
+                    Products with issues
+                    </span>
+                </div>
 
-
-            <div className="qa-card">
-                <p>Resolved</p>
-                <h2>21</h2>
-
-                <span className="qa-green">
-                Closed defects
-                </span>
-            </div>
-
-            </div>
+                </div>
 
 
             {/* FILTERS */}
@@ -1299,37 +1871,40 @@ function QADashboard({ onLogout }) {
 
             <div className="qa-card">
                 <p>Recurring Issues</p>
-                <h2>5</h2>
+                <h2>{totalRecurringIssues}</h2>
 
                 <span className="qa-red">
-                Require investigation
+                Repeated quality issues
                 </span>
             </div>
 
+
             <div className="qa-card">
                 <p>High Severity</p>
-                <h2>2</h2>
+                <h2>{highSeverityRecurring}</h2>
 
                 <span className="qa-red">
                 Immediate attention
                 </span>
             </div>
 
+
             <div className="qa-card">
-                <p>Increasing Trend</p>
-                <h2>2</h2>
+                <p>Medium Severity</p>
+                <h2>{mediumSeverityRecurring}</h2>
 
                 <span className="qa-yellow">
                 Needs monitoring
                 </span>
             </div>
 
-            <div className="qa-card">
-                <p>Action Created</p>
-                <h2>3</h2>
 
-                <span className="qa-green">
-                Corrective action assigned
+            <div className="qa-card">
+                <p>Low Severity</p>
+                <h2>{lowSeverityRecurring}</h2>
+
+                <span className="qa-blue">
+                Lower risk issues
                 </span>
             </div>
 
@@ -1392,145 +1967,76 @@ function QADashboard({ onLogout }) {
                 </thead>
 
                 <tbody>
+                    {recurringIssues.length > 0 ? (
+                        recurringIssues.map((item, index) => (
+                        <tr key={`${item.product}-${item.issue}`}>
 
-                <tr>
-                    <td>RI001</td>
-                    <td>Product AA</td>
-                    <td>Damaged Packaging</td>
-                    <td>12</td>
+                            <td>
+                            {`RI${String(index + 1).padStart(3, "0")}`}
+                            </td>
 
-                    <td>
-                    <span className="qa-trend-up">
-                        Increasing
-                    </span>
-                    </td>
+                            <td>{item.product}</td>
 
-                    <td>
-                    <span className="qa-status qa-red-status">
-                        High
-                    </span>
-                    </td>
+                            <td>{item.issue}</td>
 
-                    <td>
-                    <span className="qa-status qa-red-status">
-                        Investigation Required
-                    </span>
-                    </td>
+                            <td>{item.cases}</td>
 
-                    <td>
-                    <button
-                        className="qa-action-btn"
-                        onClick={() => {
-                        setSelectedIssue({
-                            issueId: "RI001",
-                            product: "Product AA",
-                            issue: "Damaged Packaging",
-                            cases: 12,
-                            trend: "Increasing",
-                            severity: "High",
-                        });
+                            <td>
+                            <span className="qa-trend-stable">
+                                Recurring
+                            </span>
+                            </td>
 
-                        setActivePage("corrective");
-                        }}
-                    >
-                        Investigate
-                    </button>
-                    </td>
-                </tr>
+                            <td>
+                            <span
+                                className={`qa-status ${
+                                item.severity === "High"
+                                    ? "qa-red-status"
+                                    : item.severity === "Medium"
+                                    ? "qa-yellow-status"
+                                    : "qa-blue-status"
+                                }`}
+                            >
+                                {item.severity}
+                            </span>
+                            </td>
 
+                            <td>
+                            <span className="qa-status qa-red-status">
+                                Investigation Required
+                            </span>
+                            </td>
 
-                <tr>
-                    <td>RI002</td>
-                    <td>Serum A</td>
-                    <td>Wrong Quantity</td>
-                    <td>5</td>
+                            <td>
+                            <button
+                                className="qa-action-btn"
+                                onClick={() => {
+                                setSelectedIssue({
+                                    issueId: `RI${String(index + 1).padStart(3, "0")}`,
+                                    product: item.product,
+                                    issue: item.issue,
+                                    cases: item.cases,
+                                    trend: "Recurring",
+                                    severity: item.severity,
+                                });
 
-                    <td>
-                    <span className="qa-trend-stable">
-                        Stable
-                    </span>
-                    </td>
+                                setActivePage("corrective");
+                                }}
+                            >
+                                Investigate
+                            </button>
+                            </td>
 
-                    <td>
-                    <span className="qa-status qa-yellow-status">
-                        Medium
-                    </span>
-                    </td>
-
-                    <td>
-                    <span className="qa-status qa-yellow-status">
-                        Monitoring
-                    </span>
-                    </td>
-
-                    <td>
-                    <button
-                        className="qa-action-btn"
-                        onClick={() => {
-                        setSelectedIssue({
-                            issueId: "RI002",
-                            product: "Serum A",
-                            issue: "Wrong Quantity",
-                            cases: 5,
-                            trend: "Stable",
-                            severity: "Medium",
-                        });
-
-                        setActivePage("corrective");
-                        }}
-                    >
-                        Investigate
-                    </button>
-                    </td>
-                </tr>
-
-
-                <tr>
-                    <td>RI003</td>
-                    <td>Cleanser B</td>
-                    <td>Wrong Product</td>
-                    <td>4</td>
-
-                    <td>
-                    <span className="qa-trend-down">
-                        Decreasing
-                    </span>
-                    </td>
-
-                    <td>
-                    <span className="qa-status qa-yellow-status">
-                        Medium
-                    </span>
-                    </td>
-
-                    <td>
-                    <span className="qa-status qa-green-status">
-                        Action Created
-                    </span>
-                    </td>
-
-                    <td>
-                    <button
-                        className="qa-action-btn"
-                        onClick={() => {
-                        setSelectedIssue({
-                            issueId: "RI003",
-                            product: "Cleanser B",
-                            issue: "Wrong Product",
-                            cases: 4,
-                            trend: "Decreasing",
-                            severity: "Medium",
-                        });
-
-                        setActivePage("corrective");
-                        }}
-                    >
-                        View Action
-                    </button>
-                    </td>
-                </tr>
-
-                </tbody>
+                        </tr>
+                        ))
+                    ) : (
+                        <tr>
+                        <td colSpan="8">
+                            No recurring quality issues detected.
+                        </td>
+                        </tr>
+                    )}
+                    </tbody>
 
             </table>
 
@@ -1569,6 +2075,49 @@ function QADashboard({ onLogout }) {
             </div>
 
             </div>
+
+            <div className="qa-summary-grid">
+
+                <div className="qa-card">
+                    <p>Total Actions</p>
+                    <h2>{correctiveActions.length}</h2>
+
+                    <span className="qa-pink">
+                    All corrective actions
+                    </span>
+                </div>
+
+
+                <div className="qa-card">
+                    <p>Open</p>
+                    <h2>{openCorrectiveActions}</h2>
+
+                    <span className="qa-red">
+                    Require action
+                    </span>
+                </div>
+
+
+                <div className="qa-card">
+                    <p>In Progress</p>
+                    <h2>{inProgressCorrectiveActions}</h2>
+
+                    <span className="qa-yellow">
+                    Currently being handled
+                    </span>
+                </div>
+
+
+                <div className="qa-card">
+                    <p>Completed</p>
+                    <h2>{completedCorrectiveActions}</h2>
+
+                    <span className="qa-green">
+                    Action completed
+                    </span>
+                </div>
+
+                </div>
 
 
             {selectedIssue ? (
@@ -1658,7 +2207,9 @@ function QADashboard({ onLogout }) {
 
                     <textarea
                         placeholder="Enter the identified root cause..."
-                    ></textarea>
+                        value={rootCause}
+                        onChange={(e) => setRootCause(e.target.value)}
+                        ></textarea>
                     </div>
 
 
@@ -1667,49 +2218,64 @@ function QADashboard({ onLogout }) {
 
                     <textarea
                         placeholder="Describe the corrective action to be taken..."
-                    ></textarea>
+                        value={correctiveAction}
+                        onChange={(e) => setCorrectiveAction(e.target.value)}
+                        ></textarea>
                     </div>
 
 
                     <div className="qa-form-group">
                     <label>Assigned To</label>
 
-                    <select>
-                        <option>Select responsible person</option>
-                        <option>Operator 01</option>
-                        <option>Operator 02</option>
-                        <option>Operator 03</option>
-                        <option>QA Team</option>
-                    </select>
+                    <select
+                        value={assignedTo}
+                        onChange={(e) => setAssignedTo(e.target.value)}
+                        >
+                        <option value="">Select responsible person</option>
+                        <option value="Operator 01">Operator 01</option>
+                        <option value="Operator 02">Operator 02</option>
+                        <option value="Operator 03">Operator 03</option>
+                        <option value="QA Team">QA Team</option>
+                        </select>
                     </div>
 
 
                     <div className="qa-form-group">
                     <label>Target Date</label>
 
-                    <input type="date" />
+                    <input
+                        type="date"
+                        value={targetDate}
+                        onChange={(e) => setTargetDate(e.target.value)}
+                        />
                     </div>
 
 
                     <div className="qa-form-group">
                     <label>Priority</label>
 
-                    <select defaultValue={selectedIssue.severity}>
-                        <option>High</option>
-                        <option>Medium</option>
-                        <option>Low</option>
-                    </select>
+                    <select
+                        value={priority}
+                        onChange={(e) => setPriority(e.target.value)}
+                        >
+                        <option value="High">High</option>
+                        <option value="Medium">Medium</option>
+                        <option value="Low">Low</option>
+                        </select>
                     </div>
 
 
                     <div className="qa-form-group">
                     <label>Status</label>
 
-                    <select>
-                        <option>Open</option>
-                        <option>In Progress</option>
-                        <option>Completed</option>
-                    </select>
+                    <select
+                        value={actionStatus}
+                        onChange={(e) => setActionStatus(e.target.value)}
+                        >
+                        <option value="Open">Open</option>
+                        <option value="In Progress">In Progress</option>
+                        <option value="Completed">Completed</option>
+                        </select>
                     </div>
 
 
@@ -1718,7 +2284,9 @@ function QADashboard({ onLogout }) {
 
                     <textarea
                         placeholder="Add investigation notes or additional remarks..."
-                    ></textarea>
+                        value={remarks}
+                        onChange={(e) => setRemarks(e.target.value)}
+                        ></textarea>
                     </div>
 
                 </div>
@@ -1733,9 +2301,12 @@ function QADashboard({ onLogout }) {
                     Cancel
                     </button>
 
-                    <button className="qa-save-btn">
-                    Save Corrective Action
-                    </button>
+                    <button
+                        className="qa-save-btn"
+                        onClick={handleSaveCorrectiveAction}
+                        >
+                        Save Corrective Action
+                        </button>
 
                 </div>
 
@@ -1776,37 +2347,42 @@ function QADashboard({ onLogout }) {
                     </tr>
                     </thead>
 
-                    <tbody>
+                   <tbody>
+                    {correctiveActions.length > 0 ? (
+                        correctiveActions.map((action, index) => (
+                        <tr key={action.id}>
+                            <td>{`CA${String(index + 1).padStart(3, "0")}`}</td>
 
-                    <tr>
-                        <td>CA001</td>
-                        <td>RI003</td>
-                        <td>Cleanser B</td>
-                        <td>Operator verification procedure updated</td>
-                        <td>Operator 02</td>
+                            <td>{action.issueId || "-"}</td>
 
-                        <td>
-                        <span className="qa-status qa-yellow-status">
-                            In Progress
-                        </span>
+                            <td>{action.product || "-"}</td>
+
+                            <td>{action.correctiveAction || "-"}</td>
+
+                            <td>{action.assignedTo || "-"}</td>
+
+                            <td>
+                            <span
+                                className={`qa-status ${
+                                action.status === "Completed"
+                                    ? "qa-green-status"
+                                    : action.status === "In Progress"
+                                    ? "qa-yellow-status"
+                                    : "qa-red-status"
+                                }`}
+                            >
+                                {action.status || "Open"}
+                            </span>
+                            </td>
+                        </tr>
+                        ))
+                    ) : (
+                        <tr>
+                        <td colSpan="6">
+                            No corrective actions recorded.
                         </td>
-                    </tr>
-
-
-                    <tr>
-                        <td>CA002</td>
-                        <td>RI004</td>
-                        <td>Toner E</td>
-                        <td>Expiry checking procedure revised</td>
-                        <td>QA Team</td>
-
-                        <td>
-                        <span className="qa-status qa-green-status">
-                            Completed
-                        </span>
-                        </td>
-                    </tr>
-
+                        </tr>
+                    )}
                     </tbody>
 
                 </table>

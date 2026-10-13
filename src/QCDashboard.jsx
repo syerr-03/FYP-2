@@ -17,6 +17,19 @@ function QCDashboard({ onLogout }) {
     ORD1063: "Waiting QC",
     });
   const [qcOrders, setQcOrders] = useState([]);
+  const [inspectionChecklist, setInspectionChecklist] = useState({
+    correctProduct: false,
+    correctQuantity: false,
+    productConditionGood: false,
+    packagingGood: false,
+    expiryDateValid: false,
+  });
+
+const [recheckNote, setRecheckNote] = useState("");
+
+const [inspectionResults, setInspectionResults] = useState([]);
+
+const [qualityHistory, setQualityHistory] = useState([]);
 
 useEffect(() => {
   const fetchQCOrders = async () => {
@@ -45,6 +58,124 @@ useEffect(() => {
   fetchQCOrders();
 }, []);
 
+useEffect(() => {
+  const fetchInspectionResults = async () => {
+    try {
+      const querySnapshot = await getDocs(collection(db, "orders"));
+
+      const results = querySnapshot.docs
+        .map((doc) => ({
+          id: doc.id,
+          ...doc.data(),
+        }))
+        .filter((order) =>
+          ["Recheck", "Passed", "Passed (After Recheck)", "Rejected"].includes(
+            order.QC_Result
+          )
+        )
+        .map((order) => ({
+          orderId: order.Order_ID,
+
+          customer:
+            order.Customer_Name ||
+            order.Customer ||
+            "-",
+
+          product:
+            order.items && order.items.length > 0
+              ? order.items.map((item) => item.Product_Name).join(", ")
+              : "-",
+
+          qty: order.items
+            ? order.items.reduce(
+                (total, item) =>
+                  total + Number(item.Quantity || 0),
+                0
+              )
+            : 0,
+
+          result: order.QC_Result,
+
+          inspectedAt:
+            order.QC_Rejected_At ||
+            order.QC_Completed_At ||
+            order.QC_Recheck_At ||
+            "-",
+
+          remarks:
+            order.QC_Reject_Note ||
+            order.QC_Recheck_Note ||
+            (order.QC_Result === "Passed"
+              ? "All quality checks passed"
+              : order.QC_Result === "Passed (After Recheck)"
+              ? "Issue corrected and passed QC"
+              : "-"),
+        }));
+
+      setInspectionResults(results);
+    } catch (error) {
+      console.error(
+        "Error fetching inspection results:",
+        error
+      );
+    }
+  };
+
+  fetchInspectionResults();
+}, []);
+
+useEffect(() => {
+  const fetchQualityHistory = async () => {
+    try {
+      const querySnapshot = await getDocs(collection(db, "orders"));
+
+      const history = querySnapshot.docs
+        .map((doc) => ({
+          id: doc.id,
+          ...doc.data(),
+        }))
+        .filter((order) =>
+          ["Recheck", "Passed", "Passed (After Recheck)", "Rejected"].includes(
+            order.QC_Result
+          )
+        )
+        .map((order) => ({
+          date:
+            order.QC_Completed_At ||
+            order.QC_Recheck_At ||
+            order.QC_Inspecting_At ||
+            "-",
+
+          orderId: order.Order_ID,
+
+          product:
+            order.items && order.items.length > 0
+              ? order.items.map((item) => item.Product_Name).join(", ")
+              : "-",
+
+          operator: "Operator 01",
+
+          result: order.QC_Result,
+
+          qualityIssue:
+            order.QC_Reject_Note ||
+            (order.QC_Result === "Passed"
+              ? "No Issue"
+              : order.QC_Result === "Passed (After Recheck)"
+              ? "Issue Corrected"
+              : "-"),
+
+          inspector: "QC 01",
+        }));
+
+      setQualityHistory(history);
+    } catch (error) {
+      console.error("Error fetching quality history:", error);
+    }
+  };
+
+  fetchQualityHistory();
+}, []);
 
 const newQCOrderCount = qcOrders.filter(
   (order) => order.QC_Viewed !== true
@@ -78,8 +209,113 @@ const handleOpenPendingInspection = async () => {
   }
 };
 
+const totalInspections = qualityHistory.length;
+
+const totalPassed = qualityHistory.filter(
+  (record) =>
+    record.result === "Passed" ||
+    record.result === "Passed (After Recheck)"
+).length;
+
+const totalIssues = qualityHistory.filter(
+  (record) =>
+    record.qualityIssue &&
+    record.qualityIssue !== "No Issue"
+).length;
+
+const recurringIssues = Object.values(
+  qualityHistory.reduce((acc, record) => {
+    if (
+      record.qualityIssue &&
+      record.qualityIssue !== "No Issue" &&
+      record.qualityIssue !== "Issue Corrected"
+    ) {
+      acc[record.qualityIssue] =
+        (acc[record.qualityIssue] || 0) + 1;
+    }
+
+    return acc;
+  }, {})
+).filter((count) => count > 1).length;
+
+const productIssueCounts = qualityHistory.reduce((acc, record) => {
+  if (
+    record.qualityIssue &&
+    record.qualityIssue !== "No Issue"
+  ) {
+    const productName = record.product || "Unknown Product";
+
+    if (!acc[productName]) {
+      acc[productName] = {
+        count: 0,
+        issues: {},
+      };
+    }
+
+    acc[productName].count += 1;
+
+    acc[productName].issues[record.qualityIssue] =
+      (acc[productName].issues[record.qualityIssue] || 0) + 1;
+  }
+
+  return acc;
+}, {});
+
+const mostProblematicProduct =
+  Object.entries(productIssueCounts)
+    .sort((a, b) => b[1].count - a[1].count)[0] || null;
+
+const mostProblematicProductName =
+  mostProblematicProduct
+    ? mostProblematicProduct[0]
+    : "-";
+
+const mostProblematicProductCount =
+  mostProblematicProduct
+    ? mostProblematicProduct[1].count
+    : 0;
+
+const mostCommonIssue =
+  mostProblematicProduct
+    ? Object.entries(mostProblematicProduct[1].issues)
+        .sort((a, b) => b[1] - a[1])[0]?.[0] || "-"
+    : "-";
+
+const mostProblematicRejectedCount =
+  mostProblematicProductName !== "-"
+    ? qualityHistory.filter(
+        (record) =>
+          record.product === mostProblematicProductName &&
+          record.result === "Rejected"
+      ).length
+    : 0;
+
+const mostProblematicRecheckPassedCount =
+  mostProblematicProductName !== "-"
+    ? qualityHistory.filter(
+        (record) =>
+          record.product === mostProblematicProductName &&
+          record.result === "Passed (After Recheck)"
+      ).length
+    : 0;
+
+const commonIssueCounts = qualityHistory.reduce((acc, record) => {
+  if (
+    record.qualityIssue &&
+    record.qualityIssue !== "No Issue" &&
+    record.qualityIssue !== "Issue Corrected"
+  ) {
+    acc[record.qualityIssue] =
+      (acc[record.qualityIssue] || 0) + 1;
+  }
+
+  return acc;
+}, {});
+
 
   return (
+
+
     <div className="qc-layout">
 
       {/* =========================
@@ -154,7 +390,7 @@ const handleOpenPendingInspection = async () => {
         <button
           className="qc-logout"
           onClick={onLogout}
-        >
+        ><h2>186</h2>
           Logout
         </button>
       </aside>
@@ -643,7 +879,13 @@ const handleOpenPendingInspection = async () => {
 
 
                 <tbody>
-                  {qcOrders.map((order) => (
+                  {[...qcOrders]
+                    .sort(
+                      (a, b) =>
+                        new Date(b.Sent_To_QC_At || 0) -
+                        new Date(a.Sent_To_QC_At || 0)
+                    )
+                    .map((order) => (
                     <tr key={order.Order_ID}>
                       <td>{order.Order_ID}</td>
 
@@ -676,8 +918,20 @@ const handleOpenPendingInspection = async () => {
                       </td>
 
                       <td>
-                        <span className="qc-status qc-yellow-status">
-                          Waiting QC
+                        <span
+                          className={
+                            order.QC_Status === "Recheck"
+                              ? "qc-status qc-yellow-status"
+                              : order.QC_Status === "Inspecting"
+                              ? "qc-status qc-blue-status"
+                              : "qc-status qc-yellow-status"
+                          }
+                        >
+                          {order.QC_Status === "Recheck"
+                            ? "Recheck Required"
+                            : order.QC_Status === "Inspecting"
+                            ? "Inspecting"
+                            : "Waiting QC"}
                         </span>
                       </td>
 
@@ -686,6 +940,35 @@ const handleOpenPendingInspection = async () => {
                           className="qc-action-btn"
                           onClick={async () => {
                             try {
+                              const isRecheck = order.QC_Status === "Recheck";
+
+                              if (isRecheck && order.QC_Checklist) {
+                                setInspectionChecklist({
+                                  correctProduct:
+                                    order.QC_Checklist.correctProduct || false,
+                                  correctQuantity:
+                                    order.QC_Checklist.correctQuantity || false,
+                                  productConditionGood:
+                                    order.QC_Checklist.productConditionGood || false,
+                                  packagingGood:
+                                    order.QC_Checklist.packagingGood || false,
+                                  expiryDateValid:
+                                    order.QC_Checklist.expiryDateValid || false,
+                                });
+
+                                setRecheckNote(order.QC_Recheck_Note || "");
+                              } else {
+                                setInspectionChecklist({
+                                  correctProduct: false,
+                                  correctQuantity: false,
+                                  productConditionGood: false,
+                                  packagingGood: false,
+                                  expiryDateValid: false,
+                                });
+
+                                setRecheckNote("");
+                              }
+
                               await updateDoc(
                                 doc(db, "orders", order.Order_ID),
                                 {
@@ -711,12 +994,14 @@ const handleOpenPendingInspection = async () => {
                                   order.Customer_Name ||
                                   order.Customer ||
                                   "-",
+
                                 product:
                                   order.items && order.items.length > 0
                                     ? order.items
                                         .map((item) => item.Product_Name)
                                         .join(", ")
                                     : "-",
+
                                 qty: order.items
                                   ? order.items.reduce(
                                       (total, item) =>
@@ -724,7 +1009,11 @@ const handleOpenPendingInspection = async () => {
                                       0
                                     )
                                   : 0,
+
                                 operator: "Operator 01",
+                                isRecheck: isRecheck,
+                                previousRecheckNote:
+                                  order.QC_Recheck_Note || "",
                               });
                             } catch (error) {
                               console.error(
@@ -734,7 +1023,7 @@ const handleOpenPendingInspection = async () => {
                             }
                           }}
                         >
-                          Inspect
+                          {order.QC_Status === "Recheck" ? "Recheck" : "Inspect"}
                         </button>
                       </td>
                     </tr>
@@ -801,99 +1090,256 @@ const handleOpenPendingInspection = async () => {
 
     </div>
 
+    {selectedInspection.isRecheck && (
+      <div className="qc-previous-recheck-note">
+        <strong>Previous Recheck Note</strong>
+        <p>
+          {selectedInspection.previousRecheckNote || "-"}
+        </p>
+      </div>
+    )}
 
     {/* CHECKLIST */}
 
     <div className="qc-checklist-grid">
 
-      <label>
-        <input type="checkbox" />
-        <span>Correct Product</span>
-      </label>
+    <label>
+      <input
+        type="checkbox"
+        checked={inspectionChecklist.correctProduct}
+        onChange={(e) =>
+          setInspectionChecklist((prev) => ({
+            ...prev,
+            correctProduct: e.target.checked,
+          }))
+        }
+      />
+      <span>Correct Product</span>
+    </label>
 
-      <label>
-        <input type="checkbox" />
-        <span>Correct Quantity</span>
-      </label>
+    <label>
+      <input
+        type="checkbox"
+        checked={inspectionChecklist.correctQuantity}
+        onChange={(e) =>
+          setInspectionChecklist((prev) => ({
+            ...prev,
+            correctQuantity: e.target.checked,
+          }))
+        }
+      />
+      <span>Correct Quantity</span>
+    </label>
 
-      <label>
-        <input type="checkbox" />
-        <span>Product Condition Good</span>
-      </label>
+    <label>
+      <input
+        type="checkbox"
+        checked={inspectionChecklist.productConditionGood}
+        onChange={(e) =>
+          setInspectionChecklist((prev) => ({
+            ...prev,
+            productConditionGood: e.target.checked,
+          }))
+        }
+      />
+      <span>Product Condition Good</span>
+    </label>
 
-      <label>
-        <input type="checkbox" />
-        <span>Packaging Good</span>
-      </label>
+    <label>
+      <input
+        type="checkbox"
+        checked={inspectionChecklist.packagingGood}
+        onChange={(e) =>
+          setInspectionChecklist((prev) => ({
+            ...prev,
+            packagingGood: e.target.checked,
+          }))
+        }
+      />
+      <span>Packaging Good</span>
+    </label>
 
-      <label>
-        <input type="checkbox" />
-        <span>Expiry Date Valid</span>
-      </label>
+    <label>
+      <input
+        type="checkbox"
+        checked={inspectionChecklist.expiryDateValid}
+        onChange={(e) =>
+          setInspectionChecklist((prev) => ({
+            ...prev,
+            expiryDateValid: e.target.checked,
+          }))
+        }
+      />
+      <span>Expiry Date Valid</span>
+    </label>
 
-    </div>
+  </div>
 
+    <div className="qc-recheck-note-section">
+  <label htmlFor="recheckNote">
+    Reason for Rejection
+  </label>
+
+  <textarea
+    id="recheckNote"
+    placeholder="Enter reason for rejection..."
+    value={recheckNote}
+    onChange={(e) => setRecheckNote(e.target.value)}
+  />
+</div>
 
     {/* INSPECTION ACTION */}
 
     <div className="qc-inspection-actions">
 
       <button
-        className="qc-recheck-btn"
+        className="qc-reject-btn"
         onClick={async () => {
           try {
+            if (!recheckNote.trim()) {
+              alert("Please enter a reason for rejection.");
+              return;
+            }
+
+            const rejectTime = new Date().toISOString();
+
             await updateDoc(
               doc(db, "orders", selectedInspection.orderId),
               {
-                QC_Status: "Recheck",
-                Order_Status: "Waiting QC",
-                QC_Recheck_At: new Date().toISOString(),
+                QC_Status: "Rejected",
+                QC_Result: "Rejected",
+                Order_Status: "Rejected by QC",
+
+                QC_Reject_Note: recheckNote.trim(),
+                QC_Rejected_At: rejectTime,
+
+                QC_Checklist: {
+                  correctProduct: inspectionChecklist.correctProduct,
+                  correctQuantity: inspectionChecklist.correctQuantity,
+                  productConditionGood: inspectionChecklist.productConditionGood,
+                  packagingGood: inspectionChecklist.packagingGood,
+                  expiryDateValid: inspectionChecklist.expiryDateValid,
+                },
               }
             );
 
+            setInspectionResults((prevResults) => [
+              ...prevResults,
+              {
+                orderId: selectedInspection.orderId,
+                customer: selectedInspection.customer,
+                product: selectedInspection.product,
+                qty: selectedInspection.qty,
+                result: "Rejected",
+                inspectedAt: rejectTime,
+                remarks: recheckNote.trim(),
+              },
+            ]);
+
             setQcOrders((prevOrders) =>
-              prevOrders.map((order) =>
-                order.Order_ID === selectedInspection.orderId
-                  ? {
-                      ...order,
-                      QC_Status: "Recheck",
-                      Order_Status: "Waiting QC",
-                    }
-                  : order
+              prevOrders.filter(
+                (order) =>
+                  order.Order_ID !== selectedInspection.orderId
               )
             );
 
             setInspectionStatuses((prev) => ({
               ...prev,
-              [selectedInspection.orderId]: "Recheck",
+              [selectedInspection.orderId]: "Rejected",
             }));
 
             setSelectedInspection(null);
+            setRecheckNote("");
           } catch (error) {
-            console.error("Error setting order for recheck:", error);
+            console.error("Error rejecting QC inspection:", error);
           }
         }}
       >
-        Recheck
+        Reject
       </button>
 
 
       <button
-        className="qc-complete-btn"
+        className="qc-pass-btn"
         onClick={async () => {
           try {
+            const allChecksPassed =
+              inspectionChecklist.correctProduct &&
+              inspectionChecklist.correctQuantity &&
+              inspectionChecklist.productConditionGood &&
+              inspectionChecklist.packagingGood &&
+              inspectionChecklist.expiryDateValid;
+
+            if (!allChecksPassed) {
+              alert(
+                "Please complete all QC checklist items before completing the inspection."
+              );
+              return;
+            }
+
             const completedTime = new Date().toISOString();
 
             await updateDoc(
               doc(db, "orders", selectedInspection.orderId),
               {
                 QC_Status: "Approved",
-                Order_Status: "Ready for Delivery",
-                QC_Result: "Passed",
+                Order_Status: "QC Approved",
+                Delivery_Status: "Ready",
+
+                QC_Result: selectedInspection.isRecheck
+                  ? "Passed (After Recheck)"
+                  : "Passed",
+
+                QC_Final_Checklist: {
+                  correctProduct: inspectionChecklist.correctProduct,
+                  correctQuantity: inspectionChecklist.correctQuantity,
+                  productConditionGood: inspectionChecklist.productConditionGood,
+                  packagingGood: inspectionChecklist.packagingGood,
+                  expiryDateValid: inspectionChecklist.expiryDateValid,
+                },
+
                 QC_Completed_At: completedTime,
                 Delivery_Status: "Pending Delivery",
               }
             );
+
+            setInspectionResults((prevResults) => {
+              const finalResult = selectedInspection.isRecheck
+                ? "Passed (After Recheck)"
+                : "Passed";
+
+              const finalRemarks = selectedInspection.isRecheck
+                ? recheckNote.trim() ||
+                  selectedInspection.previousRecheckNote ||
+                  "-"
+                : "All quality checks passed";
+
+              const existingIndex = prevResults.findIndex(
+                (result) => result.orderId === selectedInspection.orderId
+              );
+
+              const updatedResult = {
+                orderId: selectedInspection.orderId,
+                customer: selectedInspection.customer,
+                product: selectedInspection.product,
+                qty: selectedInspection.qty,
+                result: finalResult,
+                inspectedAt: completedTime,
+                remarks: finalRemarks,
+              };
+
+              if (existingIndex !== -1) {
+                return prevResults.map((result, index) =>
+                  index === existingIndex ? updatedResult : result
+                );
+                const isRecheck =
+                  order.QC_Status === "Recheck" ||
+                  order.QC_Rejected_At ||
+                  order.QC_Reject_Note;
+                              }
+
+              return [...prevResults, updatedResult];
+            });
 
             setQcOrders((prevOrders) =>
               prevOrders.filter(
@@ -916,7 +1362,7 @@ const handleOpenPendingInspection = async () => {
           }
         }}
       >
-        Complete Inspection
+        Pass
       </button>
 
     </div>
@@ -1071,6 +1517,53 @@ const handleOpenPendingInspection = async () => {
 
                 <tbody>
 
+                  {[...inspectionResults]
+                    .sort(
+                      (a, b) =>
+                        new Date(b.inspectedAt || 0) -
+                        new Date(a.inspectedAt || 0)
+                    )
+                    .map((result, index) => (
+                    <tr key={`${result.orderId}-${index}`}>
+                      <td>{result.orderId}</td>
+                      <td>{result.customer}</td>
+                      <td>{result.product}</td>
+                      <td>{result.qty}</td>
+
+                      <td>
+                        <span
+                          className={
+                            result.result === "Recheck"
+                              ? "qc-status qc-yellow-status"
+                              : result.result === "Passed" ||
+                                result.result === "Passed (After Recheck)"
+                              ? "qc-status qc-green-status"
+                              : "qc-status qc-red-status"
+                          }
+                        >
+                          {result.result}
+                        </span>
+                      </td>
+
+                      <td>
+                        {new Date(result.inspectedAt).toLocaleDateString()}
+                        <br />
+                        {new Date(result.inspectedAt).toLocaleTimeString([], {
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        })}
+                      </td>
+
+                      <td>{result.remarks}</td>
+
+                      <td>
+                        <button className="qc-action-btn">
+                          View
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+
                 <tr>
 
                     <td>ORD1057</td>
@@ -1123,7 +1616,9 @@ const handleOpenPendingInspection = async () => {
                     </td>
 
                     <td>
-                    Damaged packaging
+                      <span className="qc-issue-badge qc-issue-problem">
+                        Damaged Packaging
+                      </span>
                     </td>
 
                     <td>
@@ -1209,6 +1704,7 @@ const handleOpenPendingInspection = async () => {
         {/* =========================
             QUALITY HISTORY
         ========================== */}
+        
 
         {activePage === "qualityHistory" && (
         <>
@@ -1245,7 +1741,7 @@ const handleOpenPendingInspection = async () => {
 
             <div className="qc-card">
                 <p>Total Inspections</p>
-                <h2>186</h2>
+                <h2>{totalInspections}</h2>
 
                 <span className="qc-pink">
                 This month
@@ -1255,7 +1751,7 @@ const handleOpenPendingInspection = async () => {
 
             <div className="qc-card">
                 <p>Passed</p>
-                <h2>154</h2>
+                <h2>{totalPassed}</h2>
 
                 <span className="qc-green">
                 Successful inspections
@@ -1265,7 +1761,7 @@ const handleOpenPendingInspection = async () => {
 
             <div className="qc-card">
                 <p>Quality Issues</p>
-                <h2>32</h2>
+                <h2>{totalIssues}</h2>
 
                 <span className="qc-red">
                 Rejected or recheck
@@ -1275,7 +1771,7 @@ const handleOpenPendingInspection = async () => {
 
             <div className="qc-card">
                 <p>Recurring Issues</p>
-                <h2>5</h2>
+                <h2>{recurringIssues}</h2>
 
                 <span className="qc-yellow">
                 Repeated defects
@@ -1305,10 +1801,10 @@ const handleOpenPendingInspection = async () => {
                     Highest Issue Detection
                     </p>
 
-                    <h2>Product AA</h2>
+                    <h2>{mostProblematicProductName}</h2>
 
                     <p className="qc-problem-description">
-                    18 quality issues detected this month
+                    {mostProblematicProductCount} quality issues detected
                     </p>
                 </div>
 
@@ -1316,17 +1812,17 @@ const handleOpenPendingInspection = async () => {
 
                     <div className="qc-problem-stat-card">
                     <span>Main Issue</span>
-                    <strong>Damaged Packaging</strong>
+                    <strong>{mostCommonIssue}</strong>
                     </div>
 
                     <div className="qc-problem-stat-card">
                     <span>Rejected</span>
-                    <strong>12 Orders</strong>
+                    <strong>{mostProblematicRejectedCount} Orders</strong>
                     </div>
 
                     <div className="qc-problem-stat-card">
-                    <span>Recheck</span>
-                    <strong>6 Orders</strong>
+                    <span>Passed After Recheck</span>
+                    <strong>{mostProblematicRecheckPassedCount} Orders</strong>
                     </div>
 
                 </div>
@@ -1336,107 +1832,135 @@ const handleOpenPendingInspection = async () => {
             </div>
 
 
-            {/* HISTORY OVERVIEW */}
+           {/* HISTORY OVERVIEW */}
 
             <div className="qc-dashboard-grid">
 
-            <div className="qc-panel">
+              <div className="qc-panel">
 
                 <h3>Common Quality Issues</h3>
 
                 <div className="qc-history-list">
 
-                <div className="qc-history-item">
+                  <div className="qc-history-item">
 
                     <div>
-                    <strong>Damaged Packaging</strong>
-                    <p>Most frequently reported defect</p>
+                      <strong>Damaged Packaging</strong>
+                      <p>Most frequently reported defect</p>
                     </div>
 
                     <span className="qc-status qc-red-status">
-                    12 Cases
+                      {commonIssueCounts["Damaged Packaging"] || 0} Cases
                     </span>
 
-                </div>
+                  </div>
 
 
-                <div className="qc-history-item">
+                  <div className="qc-history-item">
 
                     <div>
-                    <strong>Quantity Mismatch</strong>
-                    <p>Incorrect quantity found during inspection</p>
+                      <strong>Quantity Mismatch</strong>
+                      <p>Incorrect quantity found during inspection</p>
                     </div>
 
                     <span className="qc-status qc-yellow-status">
-                    7 Cases
+                      {commonIssueCounts["Quantity Mismatch"] || 0} Cases
                     </span>
 
-                </div>
+                  </div>
 
 
-                <div className="qc-history-item">
+                  <div className="qc-history-item">
 
                     <div>
-                    <strong>Wrong Product</strong>
-                    <p>Incorrect product prepared for order</p>
+                      <strong>Wrong Product</strong>
+                      <p>Incorrect product prepared for order</p>
                     </div>
 
                     <span className="qc-status qc-yellow-status">
-                    5 Cases
+                      {commonIssueCounts["Wrong Product"] || 0} Cases
                     </span>
 
-                </div>
+                  </div>
 
 
-                <div className="qc-history-item">
+                  <div className="qc-history-item">
 
                     <div>
-                    <strong>Expiry Issue</strong>
-                    <p>Product expiry date requires attention</p>
+                      <strong>Expiry Issue</strong>
+                      <p>Product expiry date requires attention</p>
                     </div>
 
                     <span className="qc-status qc-red-status">
-                    3 Cases
+                      {commonIssueCounts["Expiry Issue"] || 0} Cases
                     </span>
 
-                </div>
+                  </div>
 
                 </div>
 
-            </div>
+              </div>
 
 
-            <div className="qc-panel">
+              <div className="qc-panel">
 
                 <h3>Quality Insights</h3>
 
-                <div className="qc-alert qc-danger-alert">
-                <strong>Repeated Packaging Defect</strong>
+                {commonIssueCounts["Damaged Packaging"] > 0 && (
+                  <div className="qc-alert qc-danger-alert">
+                    <strong>Packaging Issue Detected</strong>
 
-                <p>
-                    Packaging defects have appeared repeatedly this month.
-                </p>
-                </div>
-
-
-                <div className="qc-alert qc-warning-alert">
-                <strong>Quantity Issue</strong>
-
-                <p>
-                    Several orders required recheck due to quantity mismatch.
-                </p>
-                </div>
+                    <p>
+                      {commonIssueCounts["Damaged Packaging"]} order(s) had packaging issues.
+                    </p>
+                  </div>
+                )}
 
 
-                <div className="qc-alert qc-success-alert">
-                <strong>Quality Improvement</strong>
+                {commonIssueCounts["Quantity Mismatch"] > 0 && (
+                  <div className="qc-alert qc-warning-alert">
+                    <strong>Quantity Issue Detected</strong>
 
-                <p>
-                    Overall pass rate has improved compared with last month.
-                </p>
-                </div>
+                    <p>
+                      {commonIssueCounts["Quantity Mismatch"]} order(s) had quantity mismatch issues.
+                    </p>
+                  </div>
+                )}
 
-            </div>
+
+                {commonIssueCounts["Wrong Product"] > 0 && (
+                  <div className="qc-alert qc-danger-alert">
+                    <strong>Wrong Product Detected</strong>
+
+                    <p>
+                      {commonIssueCounts["Wrong Product"]} order(s) contained the wrong product.
+                    </p>
+                  </div>
+                )}
+
+
+                {commonIssueCounts["Expiry Issue"] > 0 && (
+                  <div className="qc-alert qc-danger-alert">
+                    <strong>Expiry Issue Detected</strong>
+
+                    <p>
+                      {commonIssueCounts["Expiry Issue"]} order(s) had expiry-related problems.
+                    </p>
+                  </div>
+                )}
+
+
+                {totalIssues === 0 && (
+                  <div className="qc-alert qc-success-alert">
+                    <strong>No Quality Issues</strong>
+
+                    <p>
+                      No quality issues have been detected in the inspected orders.
+                    </p>
+                  </div>
+                )}
+
+              </div>
 
             </div>
 
@@ -1538,117 +2062,70 @@ const handleOpenPendingInspection = async () => {
 
                 <tbody>
 
-                <tr>
+                  {qualityHistory.length > 0 ? (
+                    [...qualityHistory]
+                      .sort(
+                        (a, b) =>
+                          new Date(b.date || 0) -
+                          new Date(a.date || 0)
+                      )
+                      .map((record, index) => (
+                      <tr key={`${record.orderId}-${index}`}>
+                        <td>
+                          {record.date !== "-"
+                            ? new Date(record.date).toLocaleDateString()
+                            : "-"}
+                        </td>
 
-                    <td>25/09/2026</td>
-                    <td>ORD1058</td>
-                    <td>Cleanser B</td>
-                    <td>Operator 02</td>
+                        <td>{record.orderId}</td>
 
-                    <td>
-                    <span className="qc-status qc-red-status">
-                        Rejected
-                    </span>
-                    </td>
+                        <td>{record.product}</td>
 
-                    <td>
-                    Damaged Packaging
-                    </td>
+                        <td>{record.operator}</td>
 
-                    <td>QC 01</td>
+                        <td>
+                          <span
+                            className={
+                              record.result === "Recheck"
+                                ? "qc-status qc-yellow-status"
+                                : record.result === "Passed" ||
+                                  record.result === "Passed (After Recheck)"
+                                ? "qc-status qc-green-status"
+                                : "qc-status qc-red-status"
+                            }
+                          >
+                            {record.result}
+                          </span>
+                        </td>
 
-                    <td>
-                    <button className="qc-action-btn">
-                        View
-                    </button>
-                    </td>
+                        <td>
+                          <span
+                            className={
+                              record.qualityIssue === "No Issue"
+                                ? "qc-issue-badge qc-issue-ok"
+                                : "qc-issue-badge qc-issue-problem"
+                            }
+                          >
+                            {record.qualityIssue}
+                          </span>
+                        </td>
 
-                </tr>
+                        <td>{record.inspector}</td>
 
-
-                <tr>
-
-                    <td>25/09/2026</td>
-                    <td>ORD1059</td>
-                    <td>Product C</td>
-                    <td>Operator 01</td>
-
-                    <td>
-                    <span className="qc-status qc-yellow-status">
-                        Recheck
-                    </span>
-                    </td>
-
-                    <td>
-                    Quantity Mismatch
-                    </td>
-
-                    <td>QC 01</td>
-
-                    <td>
-                    <button className="qc-action-btn">
-                        View
-                    </button>
-                    </td>
-
-                </tr>
-
-
-                <tr>
-
-                    <td>24/09/2026</td>
-                    <td>ORD1054</td>
-                    <td>Serum A</td>
-                    <td>Operator 03</td>
-
-                    <td>
-                    <span className="qc-status qc-green-status">
-                        Passed
-                    </span>
-                    </td>
-
-                    <td>
-                    No Issue
-                    </td>
-
-                    <td>QC 02</td>
-
-                    <td>
-                    <button className="qc-action-btn">
-                        View
-                    </button>
-                    </td>
-
-                </tr>
-
-
-                <tr>
-
-                    <td>23/09/2026</td>
-                    <td>ORD1049</td>
-                    <td>Toner E</td>
-                    <td>Operator 02</td>
-
-                    <td>
-                    <span className="qc-status qc-red-status">
-                        Rejected
-                    </span>
-                    </td>
-
-                    <td>
-                    Wrong Product
-                    </td>
-
-                    <td>QC 01</td>
-
-                    <td>
-                    <button className="qc-action-btn">
-                        View
-                    </button>
-                    </td>
-
-                </tr>
-
+                        <td>
+                          <button className="qc-action-btn">
+                            View
+                          </button>
+                        </td>
+                      </tr>
+                    ))
+                  ) : (
+                    <tr>
+                      <td colSpan="8" style={{ textAlign: "center" }}>
+                        No quality history available.
+                      </td>
+                    </tr>
+                  )}
                 </tbody>
 
             </table>

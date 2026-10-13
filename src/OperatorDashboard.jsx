@@ -6,7 +6,8 @@ import {
   setDoc,
   getDoc,
   collection,
-  getDocs
+  getDocs,
+  onSnapshot
 } from "firebase/firestore";
 import "./OperatorDashboard.css";
 
@@ -20,46 +21,56 @@ function OperatorDashboard({ onLogout }) {
   const [stockFilter, setStockFilter] = useState("All");
 
   useEffect(() => {
-    const fetchData = async () => {
-      try {
-        // =========================
-        // FETCH ORDERS
-        // =========================
-        const orderSnapshot = await getDocs(
-          collection(db, "orders")
-        );
+  let unsubscribeOrders;
 
-        const orders = orderSnapshot.docs.map((doc) => ({
-          id: doc.id,
-          ...doc.data(),
-        }));
+  const fetchData = async () => {
+    try {
+      // =========================
+      // REAL-TIME ORDERS
+      // =========================
+      unsubscribeOrders = onSnapshot(
+        collection(db, "orders"),
+        (snapshot) => {
+          const orders = snapshot.docs.map((doc) => ({
+            id: doc.id,
+            ...doc.data(),
+          }));
 
-        setImportedOrders(orders);
+          setImportedOrders(orders);
+        },
+        (error) => {
+          console.error("Error listening to orders:", error);
+        }
+      );
 
+      // =========================
+      // FETCH INVENTORY
+      // =========================
+      const inventorySnapshot = await getDocs(
+        collection(db, "inventory")
+      );
 
-        // =========================
-        // FETCH INVENTORY
-        // =========================
-        const inventorySnapshot = await getDocs(
-          collection(db, "inventory")
-        );
+      const inventory = inventorySnapshot.docs.map((doc) => ({
+        id: doc.id,
+        ...doc.data(),
+      }));
 
-        const inventory = inventorySnapshot.docs.map((doc) => ({
-          id: doc.id,
-          ...doc.data(),
-        }));
+      console.log("Inventory from Firebase:", inventory);
 
-        console.log("Inventory from Firebase:", inventory);
+      setInventoryData(inventory);
+    } catch (error) {
+      console.error("Error fetching data:", error);
+    }
+  };
 
-        setInventoryData(inventory);
+  fetchData();
 
-      } catch (error) {
-        console.error("Error fetching data:", error);
-      }
-    };
-
-    fetchData();
-  }, []);
+  return () => {
+    if (unsubscribeOrders) {
+      unsubscribeOrders();
+    }
+  };
+}, []);
 
 const formatExcelDate = (value) => {
   if (!value) return "-";
@@ -90,39 +101,125 @@ const processingOrders = importedOrders.filter((order) =>
     "Preparing",
     "Prepared",
     "Waiting QC",
-    "QC Approved",
+    "Rejected by QC",
     "Hold",
   ].includes(order.Order_Status)
 );
 
-const handleProcessOrder = async () => {
-  if (!selectedOrder) return;
+const deliveryOrders = importedOrders.filter((order) => {
+  const qcPassed =
+    order.QC_Status === "Approved" ||
+    order.QC_Result === "Passed" ||
+    order.QC_Result === "Passed (After Recheck)";
+
+  const approvedOrderStatus =
+    order.Order_Status === "QC Approved" ||
+    order.Order_Status === "Ready for Delivery";
+
+  const validDeliveryStatus = [
+    "Ready",
+    "Pending Delivery",
+    "Out for Delivery",
+    "Delivered",
+    "Delivery Delayed",
+    "Not Received",
+    "Returned",
+    "Canceled",
+  ].includes(order.Delivery_Status);
+
+  return qcPassed || approvedOrderStatus || validDeliveryStatus;
+});
+
+const updateInventoryStock = async (inventoryItem, stockUpdates) => {
+  const updatedAt = new Date().toISOString();
+
+  const productRef = doc(
+    db,
+    "inventory",
+    inventoryItem.id
+  );
+
+  await setDoc(
+    productRef,
+    {
+      ...stockUpdates,
+      Last_Updated: updatedAt,
+    },
+    { merge: true }
+  );
+
+  const updatedSnap = await getDoc(productRef);
+
+  if (updatedSnap.exists()) {
+    const updatedProduct = {
+      id: updatedSnap.id,
+      ...updatedSnap.data(),
+    };
+
+    setInventoryData((prevInventory) =>
+      prevInventory.map((stock) =>
+        stock.id === updatedProduct.id
+          ? updatedProduct
+          : stock
+      )
+    );
+  }
+};
+
+const handleProcessOrder = async (orderToProcess = selectedOrder) => {
+  if (!orderToProcess) return;
 
   try {
     let enoughStock = true;
 
     // Check every product in the order
-    for (const item of selectedOrder.items) {
-      const productRef = doc(
-        db,
-        "inventory",
-        String(item.Product_Code)
-      );
+    for (const item of orderToProcess.items) {
+      const orderProductCode = String(
+        item.Product_Code || ""
+      )
+        .trim()
+        .toUpperCase();
 
-      const productSnap = await getDoc(productRef);
+      const inventoryItem = inventoryData.find((stock) => {
+        const stockCode = String(stock.Product_Code || "")
+          .trim()
+          .toUpperCase();
 
-      if (!productSnap.exists()) {
+        const stockName = String(stock.Product_Name || "")
+          .trim()
+          .toUpperCase();
+
+        const orderName = String(item.Product_Name || "")
+          .trim()
+          .toUpperCase();
+
+        return (
+          stockCode === orderProductCode ||
+          stockName === orderName
+        );
+      });
+
+      if (!inventoryItem) {
+        console.log(
+          "Inventory product not found:",
+          item.Product_Code
+        );
+
         enoughStock = false;
         break;
       }
 
-      const stockData = productSnap.data();
+      const availableStock = Number(
+        inventoryItem.Available_Stock || 0
+      );
 
-      const availableStock =
-        Number(stockData.Available_Stock || 0);
+      const orderQty = Number(item.Quantity || 0);
 
-      const orderQty =
-        Number(item.Quantity || 0);
+      console.log("STOCK CHECK:", {
+        productCode: item.Product_Code,
+        availableStock,
+        orderQty,
+      });
 
       if (availableStock < orderQty) {
         enoughStock = false;
@@ -137,15 +234,45 @@ const handleProcessOrder = async () => {
     // =========================
     if (enoughStock) {
 
-      for (const item of selectedOrder.items) {
+      for (const item of orderToProcess.items) {
+        const orderProductCode = String(
+          item.Product_Code || ""
+        )
+          .trim()
+          .toUpperCase();
+
+        const inventoryItem = inventoryData.find((stock) => {
+          const stockCode = String(stock.Product_Code || "")
+            .trim()
+            .toUpperCase();
+
+          const stockName = String(stock.Product_Name || "")
+            .trim()
+            .toUpperCase();
+
+          const orderName = String(item.Product_Name || "")
+            .trim()
+            .toUpperCase();
+
+          return (
+            stockCode === orderProductCode ||
+            stockName === orderName
+          );
+        });
+
+        if (!inventoryItem) {
+          throw new Error(
+            `Inventory not found for ${item.Product_Code}`
+          );
+        }
+
         const productRef = doc(
           db,
           "inventory",
-          String(item.Product_Code)
+          inventoryItem.id
         );
 
-        const productSnap = await getDoc(productRef);
-        const stockData = productSnap.data();
+        const stockData = inventoryItem;
 
         const qty = Number(item.Quantity || 0);
 
@@ -155,18 +282,15 @@ const handleProcessOrder = async () => {
         const newAvailable =
           Number(stockData.Available_Stock || 0) - qty;
 
-        await setDoc(
-          productRef,
-          {
-            Reserved_Stock: newReserved,
-            Available_Stock: newAvailable,
-          },
-          { merge: true }
-        );
+        await updateInventoryStock(inventoryItem, {
+          Reserved_Stock: newReserved,
+          Available_Stock: newAvailable,
+        });
+
       }
 
       await setDoc(
-        doc(db, "orders", selectedOrder.Order_ID),
+        doc(db, "orders", orderToProcess.Order_ID),
         {
           Order_Status: "Processing",
           Stock_Status: "Reserved",
@@ -175,9 +299,26 @@ const handleProcessOrder = async () => {
         { merge: true }
       );
 
+      const updatedProductSnap = await getDoc(productRef);
+
+      if (updatedProductSnap.exists()) {
+        const updatedProduct = {
+          id: updatedProductSnap.id,
+          ...updatedProductSnap.data(),
+        };
+
+        setInventoryData((prevInventory) =>
+          prevInventory.map((stock) =>
+            stock.id === updatedProduct.id
+              ? updatedProduct
+              : stock
+          )
+        );
+      }
+
       setImportedOrders((prevOrders) =>
         prevOrders.map((order) =>
-          order.Order_ID === selectedOrder.Order_ID
+          order.Order_ID === orderToProcess.Order_ID
             ? {
                 ...order,
                 Order_Status: "Processing",
@@ -196,7 +337,7 @@ const handleProcessOrder = async () => {
     else {
 
       await setDoc(
-        doc(db, "orders", selectedOrder.Order_ID),
+        doc(db, "orders", orderToProcess.Order_ID),
         {
           Order_Status: "Hold",
           Stock_Status: "Waiting Stock",
@@ -207,7 +348,7 @@ const handleProcessOrder = async () => {
 
       setImportedOrders((prevOrders) =>
         prevOrders.map((order) =>
-          order.Order_ID === selectedOrder.Order_ID
+          order.Order_ID === orderToProcess.Order_ID
             ? {
                 ...order,
                 Order_Status: "Hold",
@@ -429,6 +570,153 @@ const handleSendToQC = async (order) => {
     alert("Failed to send order to QC.");
   }
 };
+
+const handleSendBackToQC = async (order) => {
+  try {
+    const sentTime = new Date().toISOString();
+
+    await setDoc(
+      doc(db, "orders", order.Order_ID),
+      {
+        Order_Status: "Waiting QC",
+        QC_Status: "Recheck",
+        Sent_To_QC_At: sentTime,
+        QC_Viewed: false,
+      },
+      { merge: true }
+    );
+
+    setImportedOrders((prevOrders) =>
+      prevOrders.map((item) =>
+        item.Order_ID === order.Order_ID
+          ? {
+              ...item,
+              Order_Status: "Waiting QC",
+              QC_Status: "Recheck",
+              Sent_To_QC_At: sentTime,
+              QC_Viewed: false,
+            }
+          : item
+      )
+    );
+
+    setSelectedOrder(null);
+
+    alert(`${order.Order_ID} has been sent back to QC for recheck.`);
+  } catch (error) {
+    console.error("Error sending order back to QC:", error);
+    alert("Failed to send order back to QC.");
+  }
+};
+
+const handleDeliveryStatus = async (order, newStatus) => {
+  try {
+    const updatedAt = new Date().toISOString();
+
+    if (newStatus === "Delivered") {
+      for (const item of order.items || []) {
+        const inventoryItem = inventoryData.find((stock) => {
+          const stockCode = String(stock.Product_Code || "")
+            .trim()
+            .toUpperCase();
+
+          const stockName = String(stock.Product_Name || "")
+            .trim()
+            .toUpperCase();
+
+          const orderCode = String(item.Product_Code || "")
+            .trim()
+            .toUpperCase();
+
+          const orderName = String(item.Product_Name || "")
+            .trim()
+            .toUpperCase();
+
+          return stockCode === orderCode || stockName === orderName;
+        });
+
+        if (!inventoryItem) continue;
+
+        const qty = Number(item.Quantity || 0);
+
+        const currentStock = Number(
+          inventoryItem.Current_Stock || 0
+        );
+
+        const reservedStock = Number(
+          inventoryItem.Reserved_Stock || 0
+        );
+
+        const newCurrentStock = Math.max(
+          0,
+          currentStock - qty
+        );
+
+        const newReservedStock = Math.max(
+          0,
+          reservedStock - qty
+        );
+
+        const newAvailableStock =
+          newCurrentStock - newReservedStock;
+
+        const productRef = doc(
+          db,
+          "inventory",
+          inventoryItem.id
+        );
+
+        await setDoc(
+          productRef,
+          {
+            Current_Stock: newCurrentStock,
+            Reserved_Stock: newReservedStock,
+            Available_Stock: newAvailableStock,
+            Last_Updated: updatedAt,          },
+          { merge: true }
+        );
+
+        setInventoryData((prevInventory) =>
+          prevInventory.map((stock) =>
+            stock.id === inventoryItem.id
+              ? {
+                  ...stock,
+                  Current_Stock: newCurrentStock,
+                  Reserved_Stock: newReservedStock,
+                  Available_Stock: newAvailableStock,
+                  Last_Updated: updatedAt,
+                }
+              : stock
+          )
+        );
+      }
+    }
+
+    await setDoc(
+      doc(db, "orders", order.Order_ID),
+      {
+        Delivery_Status: newStatus,
+        Delivery_Updated_At: updatedAt,
+      },
+      { merge: true }
+    );
+
+    setImportedOrders((prevOrders) =>
+      prevOrders.map((item) =>
+        item.Order_ID === order.Order_ID
+          ? {
+              ...item,
+              Delivery_Status: newStatus,
+              Delivery_Updated_At: updatedAt,
+            }
+          : item
+      )
+    );
+  } catch (error) {
+    console.error("Error updating delivery status:", error);
+    alert("Failed to update delivery status.");
+  }
+}; 
 
 const totalProducts = inventoryData.length;
 
@@ -1269,8 +1557,19 @@ const filteredInventory = inventoryData.filter((item) => {
                 <tbody>
 
                   {newOrders.length > 0 ? (
-                    newOrders.map(
-                      (order) => {
+                    [...newOrders]
+                      .sort((a, b) => {
+                        const dateA = new Date(
+                          `${formatExcelDate(a.Order_Date)} ${a.Order_Time || "00:00"}`
+                        );
+
+                        const dateB = new Date(
+                          `${formatExcelDate(b.Order_Date)} ${b.Order_Time || "00:00"}`
+                        );
+
+                        return dateB - dateA;
+                      })
+                      .map((order) => {
 
                         const totalItems =
                           order.items.reduce(
@@ -1501,21 +1800,27 @@ const filteredInventory = inventoryData.filter((item) => {
           <div className="operator-modal-address">
 
             <p>
-
               <strong>
                 Delivery Address:
               </strong>
-
             </p>
 
             <p>
-
-              {selectedOrder.Address ||
-                "-"}
-
+              {selectedOrder.Address || "-"}
             </p>
 
           </div>
+
+
+          {selectedOrder.Order_Status === "Rejected by QC" && (
+            <div className="operator-qc-reject-box">
+              <strong>QC Rejection Reason</strong>
+              <p>{selectedOrder.QC_Reject_Note || "-"}</p>
+            </div>
+          )}
+
+
+{/* ORDER ITEMS */}
 
 
           {/* ORDER ITEMS */}
@@ -1617,12 +1922,23 @@ const filteredInventory = inventoryData.filter((item) => {
               </button>
 
 
-              <button
-                className="operator-action-btn"
-                onClick={handleProcessOrder}
-              >
-                Process Order
-              </button>
+              {selectedOrder.Order_Status !== "Rejected by QC" && (
+                <button
+                  className="operator-action-btn"
+                  onClick={handleProcessOrder}
+                >
+                  Process Order
+                </button>
+              )}
+
+              {selectedOrder.Order_Status === "Rejected by QC" && (
+                <button
+                  className="operator-action-btn"
+                  onClick={() => handleSendBackToQC(selectedOrder)}
+                >
+                  Send Back to QC
+                </button>
+              )}
 
             </div>
 
@@ -1790,7 +2106,13 @@ const filteredInventory = inventoryData.filter((item) => {
                 <tbody>
 
                   {processingOrders.length > 0 ? (
-                    processingOrders.map((order) => {
+                    [...processingOrders]
+                      .sort(
+                        (a, b) =>
+                          new Date(b.Processed_At || 0) -
+                          new Date(a.Processed_At || 0)
+                      )
+                      .map((order) => {
                       const totalQty =
                         order.items?.reduce(
                           (total, item) => total + Number(item.Quantity || 0),
@@ -1852,7 +2174,17 @@ const filteredInventory = inventoryData.filter((item) => {
                           </td>
 
                           <td>
-                            <span className="operator-status operator-blue-status">
+                            <span
+                              className={
+                                order.Order_Status === "Rejected by QC"
+                                  ? "operator-status operator-red-status"
+                                  : order.Order_Status === "Prepared"
+                                  ? "operator-status operator-green-status"
+                                  : order.Order_Status === "Waiting QC"
+                                  ? "operator-status operator-yellow-status"
+                                  : "operator-status operator-blue-status"
+                              }
+                            >
                               {order.Order_Status}
                             </span>
                           </td>
@@ -1902,12 +2234,22 @@ const filteredInventory = inventoryData.filter((item) => {
 
                             {order.Order_Status === "Hold" && (
                               <button
-                                className="operator-action-btn disabled-btn"
-                                disabled
+                                className="operator-action-btn"
+                                onClick={() => handleProcessOrder(order)}
                               >
-                                Waiting Stock
+                                Recheck Stock
                               </button>
                             )}
+
+                            {order.Order_Status === "Rejected by QC" && (
+                              <button
+                                className="operator-action-btn"
+                                onClick={() => setSelectedOrder(order)}
+                              >
+                                View Details
+                              </button>
+                            )}
+
                           </td>
 
                         </tr>
@@ -2225,10 +2567,15 @@ const filteredInventory = inventoryData.filter((item) => {
                     return (
                       <tr key={item.Product_Code}>
                         <td>{item.Product_Code}</td>
+
                         <td>{item.Product_Name}</td>
+
                         <td>{current}</td>
+
                         <td>{reserved}</td>
+
                         <td>{available}</td>
+
                         <td>{reorder}</td>
 
                         <td>
@@ -2238,7 +2585,18 @@ const filteredInventory = inventoryData.filter((item) => {
                         </td>
 
                         <td>
-                          {item.Stock_Month}/{item.Stock_Year}
+                          {item.Last_Updated ? (
+                            <>
+                              {new Date(item.Last_Updated).toLocaleDateString("en-GB")}
+                              <br />
+                              {new Date(item.Last_Updated).toLocaleTimeString([], {
+                                hour: "2-digit",
+                                minute: "2-digit",
+                              })}
+                            </>
+                          ) : (
+                            "-"
+                          )}
                         </td>
                       </tr>
                     );
@@ -2492,137 +2850,207 @@ const filteredInventory = inventoryData.filter((item) => {
 
 
                 <tbody>
+                  {deliveryOrders.length > 0 ? (
+                    [...deliveryOrders]
+                      .sort(
+                        (a, b) =>
+                          new Date(
+                            b.Delivery_Updated_At ||
+                            b.QC_Completed_At ||
+                            b.Sent_To_QC_At ||
+                            0
+                          ) -
+                          new Date(
+                            a.Delivery_Updated_At ||
+                            a.QC_Completed_At ||
+                            a.Sent_To_QC_At ||
+                            0
+                          )
+                      )
+                      .map((order) => {
+                      const totalQty =
+                        order.items?.reduce(
+                          (total, item) => total + Number(item.Quantity || 0),
+                          0
+                        ) || 0;
 
-                <tr>
-                    <td>ORD1065</td>
-                    <td>Aina</td>
-                    <td>Serum A</td>
-                    <td>2</td>
+                      const productNames =
+                        order.items
+                          ?.map((item) => item.Product_Name)
+                          .filter(Boolean)
+                          .join(", ") || "-";
 
-                    <td>
-                    <span className="operator-status operator-green-status">
-                        Passed
-                    </span>
-                    </td>
+                      const deliveryStatus =
+                        order.Delivery_Status === "Pending Delivery"
+                          ? "Ready"
+                          : order.Delivery_Status ||
+                            (order.QC_Status === "Approved" ||
+                            order.QC_Result === "Passed" ||
+                            order.QC_Result === "Passed (After Recheck)" ||
+                            order.Order_Status === "QC Approved" ||
+                            order.Order_Status === "Ready for Delivery"
+                              ? "Ready"
+                              : "-");
 
-                    <td>
-                    <span className="operator-status operator-pink-status">
-                        Ready for Delivery
-                    </span>
-                    </td>
+                      const lastUpdated =
+                        order.Delivery_Updated_At ||
+                        order.QC_Completed_At ||
+                        order.Sent_To_QC_At ||
+                        order.Processed_At ||
+                        null;
 
-                    <td>
-                    25/09/2026
-                    <br />
-                    10:20 AM
-                    </td>
+                      return (
+                        <tr key={order.Order_ID}>
+                          <td>{order.Order_ID}</td>
 
-                    <td>
-                    <button className="operator-action-btn">
-                        Dispatch
-                    </button>
-                    </td>
-                </tr>
+                          <td>{order.Customer_Name || "-"}</td>
 
+                          <td>{productNames}</td>
 
-                <tr>
-                    <td>ORD1063</td>
-                    <td>Farah</td>
-                    <td>Cleanser B</td>
-                    <td>1</td>
+                          <td>{totalQty}</td>
 
-                    <td>
-                    <span className="operator-status operator-green-status">
-                        Passed
-                    </span>
-                    </td>
+                          <td>
+                            <span className="operator-status operator-green-status">
+                              {order.QC_Result || "Passed"}
+                            </span>
+                          </td>
 
-                    <td>
-                    <span className="operator-status operator-blue-status">
-                        Out for Delivery
-                    </span>
-                    </td>
+                          <td>
+                            <span
+                              className={
+                                deliveryStatus === "Delivered"
+                                  ? "operator-status operator-green-status"
+                                  : deliveryStatus === "Out for Delivery"
+                                  ? "operator-status operator-blue-status"
+                                  : deliveryStatus === "Ready"
+                                  ? "operator-status operator-pink-status"
+                                  : deliveryStatus === "Delivery Delayed"
+                                  ? "operator-status operator-yellow-status"
+                                  : "operator-status operator-red-status"
+                              }
+                            >
+                              {deliveryStatus}
+                            </span>
+                          </td>
 
-                    <td>
-                    25/09/2026
-                    <br />
-                    09:45 AM
-                    </td>
+                          <td>
+                            {lastUpdated ? (
+                              <>
+                                {new Date(lastUpdated).toLocaleDateString("en-GB")}
+                                <br />
+                                {new Date(lastUpdated).toLocaleTimeString([], {
+                                  hour: "2-digit",
+                                  minute: "2-digit",
+                                })}
+                              </>
+                            ) : (
+                              "-"
+                            )}
+                          </td>
 
-                    <td>
-                    <button className="operator-action-btn">
-                        Mark Delivered
-                    </button>
-                    </td>
-                </tr>
+                          <td>
+                            {deliveryStatus === "Ready" && (
+                              <button
+                                className="operator-action-btn"
+                                onClick={() => handleDeliveryStatus(order, "Out for Delivery")}
+                              >
+                                Out for Delivery
+                              </button>
+                            )}
 
+                            {deliveryStatus === "Out for Delivery" && (
+                              <div className="operator-delivery-actions">
+                                <button
+                                  className="operator-action-btn"
+                                  onClick={() => handleDeliveryStatus(order, "Delivered")}
+                                >
+                                  Delivered
+                                </button>
 
-                <tr>
-                    <td>ORD1059</td>
-                    <td>Amir</td>
-                    <td>Product C</td>
-                    <td>3</td>
+                                <select
+                                  className="operator-delivery-problem-select"
+                                  defaultValue=""
+                                  onChange={(e) => {
+                                    if (e.target.value) {
+                                      handleDeliveryStatus(order, e.target.value);
+                                    }
+                                  }}
+                                >
+                                  <option value="">Problem</option>
+                                  <option value="Delivery Delayed">
+                                    Delivery Delayed
+                                  </option>
+                                  <option value="Not Received">
+                                    Not Received
+                                  </option>
+                                  <option value="Returned">
+                                    Returned
+                                  </option>
+                                  <option value="Canceled">
+                                    Canceled
+                                  </option>
+                                </select>
+                              </div>
+                            )}
 
-                    <td>
-                    <span className="operator-status operator-green-status">
-                        Passed
-                    </span>
-                    </td>
+                            {deliveryStatus === "Delivery Delayed" && (
+                              <>
+                                <button
+                                  className="operator-action-btn"
+                                  onClick={() =>
+                                    handleDeliveryStatus(order, "Out for Delivery")
+                                  }
+                                >
+                                  Resume Delivery
+                                </button>
 
-                    <td>
-                    <span className="operator-status operator-red-status">
-                        Delayed
-                    </span>
-                    </td>
+                                <select
+                                  className="operator-delivery-problem-select"
+                                  defaultValue=""
+                                  onChange={(e) => {
+                                    if (e.target.value) {
+                                      handleDeliveryStatus(order, e.target.value);
+                                    }
+                                  }}
+                                >
+                                  <option value="">Update Problem</option>
+                                  <option value="Not Received">
+                                    Not Received
+                                  </option>
+                                  <option value="Returned">
+                                    Returned
+                                  </option>
+                                  <option value="Canceled">
+                                    Canceled
+                                  </option>
+                                </select>
+                              </>
+                            )}
 
-                    <td>
-                    25/09/2026
-                    <br />
-                    08:30 AM
-                    </td>
-
-                    <td>
-                    <button className="operator-action-btn">
-                        Update
-                    </button>
-                    </td>
-                </tr>
-
-
-                <tr>
-                    <td>ORD1057</td>
-                    <td>Hana</td>
-                    <td>Toner E</td>
-                    <td>2</td>
-
-                    <td>
-                    <span className="operator-status operator-green-status">
-                        Passed
-                    </span>
-                    </td>
-
-                    <td>
-                    <span className="operator-status operator-green-status">
-                        Delivered
-                    </span>
-                    </td>
-
-                    <td>
-                    25/09/2026
-                    <br />
-                    08:10 AM
-                    </td>
-
-                    <td>
-                    <button
-                        className="operator-action-btn disabled-btn"
-                        disabled
-                    >
-                        Completed
-                    </button>
-                    </td>
-                </tr>
-
+                            {[
+                              "Delivered",
+                              "Not Received",
+                              "Returned",
+                              "Canceled",
+                            ].includes(deliveryStatus) && (
+                              <button
+                                className="operator-action-btn disabled-btn"
+                                disabled
+                              >
+                                Completed
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })
+                  ) : (
+                    <tr>
+                      <td colSpan="8" style={{ textAlign: "center" }}>
+                        No delivery orders available.
+                      </td>
+                    </tr>
+                  )}
                 </tbody>
 
             </table>

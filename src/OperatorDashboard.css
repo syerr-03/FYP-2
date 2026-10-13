@@ -863,3 +863,27 @@
 .operator-modal-cancel:hover {
   background: #e5e7eb;
 }
+
+.operator-delivery-problem-select {
+  border: none;
+  background: #f3f4f6;
+  color: #374151;
+  padding: 9px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  margin-left: 8px;
+  outline: none;
+}
+
+.operator-delivery-problem-select:hover {
+  background: #e5e7eb;
+}
+
+.operator-delivery-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
