@@ -339,5 +339,119 @@ def get_inventory():
         }), 500
 
 
+# =========================
+# CUSTOMER SEGMENTATION AI RESULTS
+# =========================
+
+@app.route("/customer-segmentation", methods=["GET"])
+def customer_segmentation():
+    try:
+        customers = pd.read_excel(
+            "data/Customer_Segmentation_Final.xlsx",
+            sheet_name="Customer_Segments"
+        )
+
+        customers = customers.replace(
+            {np.nan: None}
+        )
+
+        customer_records = customers.to_dict(
+            orient="records"
+        )
+
+        segment_counts = (
+            customers["Customer_Segment"]
+            .value_counts()
+            .to_dict()
+        )
+
+        return jsonify({
+            "total_customers": len(customer_records),
+            "segment_counts": segment_counts,
+            "data": customer_records
+        })
+
+    except Exception as e:
+        return jsonify({
+            "error": str(e)
+        }), 500
+
+
+# ============================================
+# ANOMALY DETECTION - ISOLATION FOREST
+# ============================================
+
+from pathlib import Path
+
+@app.route("/anomaly-detection", methods=["GET"])
+def anomaly_detection():
+    try:
+        base_dir = Path(__file__).resolve().parent
+
+        model_dir = base_dir / "saved_models"
+        data_dir = base_dir / "data"
+
+        # Load saved AI components
+        model = joblib.load(
+            model_dir / "Isolation_Forest_Anomaly_Model.pkl"
+        )
+
+        scaler = joblib.load(
+            model_dir / "Anomaly_Scaler.pkl"
+        )
+
+        features = joblib.load(
+            model_dir / "Anomaly_Features.pkl"
+        )
+
+        # Load historical dataset
+        df = pd.read_excel(
+            data_dir / "FYP_Master_All_43_Products_Related.xlsx",
+            sheet_name="Master_Order_History"
+        )
+
+        # Prepare data in the same feature order as training
+        X = df[features].copy()
+
+        # Scale and predict
+        X_scaled = scaler.transform(X)
+
+        predictions = model.predict(X_scaled)
+        scores = model.decision_function(X_scaled)
+
+        df["Anomaly_Prediction"] = predictions
+        df["Anomaly_Score"] = scores
+
+        # Isolation Forest: -1 = anomaly, 1 = normal
+        anomalies = df[df["Anomaly_Prediction"] == -1].copy()
+
+        anomalies = anomalies.sort_values(
+            "Anomaly_Score",
+            ascending=True
+        )
+
+        # Format dates for JSON
+        if "Order_Date" in anomalies.columns:
+            anomalies["Order_Date"] = pd.to_datetime(
+                anomalies["Order_Date"],
+                errors="coerce"
+            ).dt.strftime("%Y-%m-%d")
+
+        records = anomalies.astype(object).where(
+            pd.notnull(anomalies), None
+        ).to_dict(orient="records")
+
+        return jsonify({
+            "total_transactions": len(df),
+            "anomalies_detected": len(anomalies),
+            "normal_transactions": int(
+                (predictions == 1).sum()
+            ),
+            "data": records
+        })
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 if __name__ == "__main__":
     app.run(debug=True)

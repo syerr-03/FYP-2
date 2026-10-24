@@ -7,18 +7,36 @@ import {
   getDoc,
   collection,
   getDocs,
-  onSnapshot
+  onSnapshot,
+  updateDoc,
+  addDoc,
+  runTransaction,
 } from "firebase/firestore";
 import "./OperatorDashboard.css";
 
 function OperatorDashboard({ onLogout }) {
   const [activePage, setActivePage] = useState("dashboard");
   const [importedOrders, setImportedOrders] = useState([]);
-  const [importFileName, setImportFileName] = useState("");
+  const [importFileName, setImportFileName] = useState(
+    localStorage.getItem("lastImportedFile") || ""
+  );
   const [selectedOrder, setSelectedOrder] = useState(null);
+  const [selectedRejectedOrder, setSelectedRejectedOrder] = useState(null);
+  const [correctionNote, setCorrectionNote] = useState("");
+  const [correctionCompleted, setCorrectionCompleted] = useState(false);
+  const [sendingForRecheck, setSendingForRecheck] = useState(false);
   const [inventoryData, setInventoryData] = useState([]);
   const [inventorySearch, setInventorySearch] = useState("");
   const [stockFilter, setStockFilter] = useState("All");
+  const [newOrderSearch, setNewOrderSearch] = useState("");
+  const [platformFilter, setPlatformFilter] = useState("All");
+  const [processingSearch, setProcessingSearch] = useState("");
+  const [processingStatusFilter, setProcessingStatusFilter] = useState("All");
+  const [selectedStockItem, setSelectedStockItem] = useState(null);
+  const [addStockQty, setAddStockQty] = useState("");
+  const [deliverySearch, setDeliverySearch] = useState("");
+  const [deliveryStatusFilter, setDeliveryStatusFilter] = useState("All");
+  const [openAlert, setOpenAlert] = useState(null);
 
   useEffect(() => {
   let unsubscribeOrders;
@@ -95,6 +113,24 @@ const formatExcelDate = (value) => {
   (order) => (order.Order_Status || "New Order") === "New Order"
 );
 
+const filteredNewOrders = newOrders.filter((order) => {
+  const searchText = newOrderSearch.toLowerCase();
+
+  const matchesSearch =
+    String(order.Order_ID || "")
+      .toLowerCase()
+      .includes(searchText) ||
+    String(order.Customer_Name || "")
+      .toLowerCase()
+      .includes(searchText);
+
+  const matchesPlatform =
+    platformFilter === "All" ||
+    order.Platform === platformFilter;
+
+  return matchesSearch && matchesPlatform;
+});
+
 const processingOrders = importedOrders.filter((order) =>
   [
     "Processing",
@@ -105,6 +141,24 @@ const processingOrders = importedOrders.filter((order) =>
     "Hold",
   ].includes(order.Order_Status)
 );
+
+const filteredProcessingOrders = processingOrders.filter((order) => {
+  const searchText = processingSearch.toLowerCase();
+
+  const matchesSearch =
+    String(order.Order_ID || "")
+      .toLowerCase()
+      .includes(searchText) ||
+    String(order.Customer_Name || "")
+      .toLowerCase()
+      .includes(searchText);
+
+  const matchesStatus =
+    processingStatusFilter === "All" ||
+    order.Order_Status === processingStatusFilter;
+
+  return matchesSearch && matchesStatus;
+});
 
 const deliveryOrders = importedOrders.filter((order) => {
   const qcPassed =
@@ -129,6 +183,40 @@ const deliveryOrders = importedOrders.filter((order) => {
 
   return qcPassed || approvedOrderStatus || validDeliveryStatus;
 });
+
+
+const filteredDeliveryOrders = deliveryOrders.filter((order) => {
+  const searchText = deliverySearch.trim().toLowerCase();
+
+  const productNames = (order.items || [])
+    .map((item) => item.Product_Name || "")
+    .join(" ")
+    .toLowerCase();
+
+  const matchesSearch =
+    String(order.Order_ID || "").toLowerCase().includes(searchText) ||
+    String(order.Customer_Name || "").toLowerCase().includes(searchText) ||
+    productNames.includes(searchText);
+
+  const deliveryStatus =
+    order.Delivery_Status === "Pending Delivery"
+      ? "Ready"
+      : order.Delivery_Status ||
+        (order.QC_Status === "Approved" ||
+        order.QC_Result === "Passed" ||
+        order.QC_Result === "Passed (After Recheck)" ||
+        order.Order_Status === "QC Approved" ||
+        order.Order_Status === "Ready for Delivery"
+          ? "Ready"
+          : "-");
+
+  const matchesStatus =
+    deliveryStatusFilter === "All" ||
+    deliveryStatus === deliveryStatusFilter;
+
+  return matchesSearch && matchesStatus;
+});
+
 
 const updateInventoryStock = async (inventoryItem, stockUpdates) => {
   const updatedAt = new Date().toISOString();
@@ -166,21 +254,34 @@ const updateInventoryStock = async (inventoryItem, stockUpdates) => {
   }
 };
 
-const handleProcessOrder = async (orderToProcess = selectedOrder) => {
+const handleProcessOrder = async (
+  orderToProcess = selectedOrder,
+  inventorySource = inventoryData
+) => {
   if (!orderToProcess) return;
+
+  const orderItems = Array.isArray(orderToProcess.items)
+  ? orderToProcess.items
+  : [
+      {
+        Product_Code: orderToProcess.Product_Code || "",
+        Product_Name: orderToProcess.Product_Name || "",
+        Quantity: Number(orderToProcess.Quantity || 0),
+      },
+    ];
 
   try {
     let enoughStock = true;
 
     // Check every product in the order
-    for (const item of orderToProcess.items) {
+    for (const item of orderItems) {
       const orderProductCode = String(
         item.Product_Code || ""
       )
         .trim()
         .toUpperCase();
 
-      const inventoryItem = inventoryData.find((stock) => {
+      const inventoryItem = inventorySource.find((stock) => {
         const stockCode = String(stock.Product_Code || "")
           .trim()
           .toUpperCase();
@@ -234,14 +335,14 @@ const handleProcessOrder = async (orderToProcess = selectedOrder) => {
     // =========================
     if (enoughStock) {
 
-      for (const item of orderToProcess.items) {
+      for (const item of orderItems) {
         const orderProductCode = String(
           item.Product_Code || ""
         )
           .trim()
           .toUpperCase();
 
-        const inventoryItem = inventoryData.find((stock) => {
+        const inventoryItem = inventorySource.find((stock) => {
           const stockCode = String(stock.Product_Code || "")
             .trim()
             .toUpperCase();
@@ -299,22 +400,6 @@ const handleProcessOrder = async (orderToProcess = selectedOrder) => {
         { merge: true }
       );
 
-      const updatedProductSnap = await getDoc(productRef);
-
-      if (updatedProductSnap.exists()) {
-        const updatedProduct = {
-          id: updatedProductSnap.id,
-          ...updatedProductSnap.data(),
-        };
-
-        setInventoryData((prevInventory) =>
-          prevInventory.map((stock) =>
-            stock.id === updatedProduct.id
-              ? updatedProduct
-              : stock
-          )
-        );
-      }
 
       setImportedOrders((prevOrders) =>
         prevOrders.map((order) =>
@@ -361,7 +446,6 @@ const handleProcessOrder = async (orderToProcess = selectedOrder) => {
     }
 
     setSelectedOrder(null);
-    setActivePage("processing");
 
   } catch (error) {
     console.error("Error processing order:", error);
@@ -701,6 +785,27 @@ const handleDeliveryStatus = async (order, newStatus) => {
       { merge: true }
     );
 
+    
+if (
+  [
+    "Delivery Delayed",
+    "Not Received",
+    "Returned",
+    "Canceled",
+  ].includes(newStatus) &&
+  order.Delivery_Status !== newStatus
+) {
+  await addDoc(collection(db, "delivery_issues"), {
+    Order_ID: order.Order_ID,
+    Customer_Name: order.Customer_Name || "-",
+    items: order.items || [],
+    Delivery_Issue_Type: newStatus,
+    Delivery_Issue_At: updatedAt,
+    Source: "Operator",
+  });
+}
+
+
     setImportedOrders((prevOrders) =>
       prevOrders.map((item) =>
         item.Order_ID === order.Order_ID
@@ -766,6 +871,302 @@ const filteredInventory = inventoryData.filter((item) => {
   return matchesSearch && matchesFilter;
 });
 
+const criticalStockCount = inventoryData.filter((item) => {
+  const available = Number(item.Available_Stock || 0);
+  const safety = Number(item.Safety_Stock || 0);
+
+  return available > 0 && available <= safety;
+}).length;
+
+const lowOnlyStockCount = inventoryData.filter((item) => {
+  const available = Number(item.Available_Stock || 0);
+  const safety = Number(item.Safety_Stock || 0);
+  const reorder = Number(item.Reorder_Level || 0);
+
+  return available > safety && available <= reorder;
+}).length;
+
+const stableStockCount = inventoryData.filter((item) => {
+  const available = Number(item.Available_Stock || 0);
+  const reorder = Number(item.Reorder_Level || 0);
+
+  return available > reorder;
+}).length;
+
+const waitingQCCount = importedOrders.filter(
+  (order) => order.Order_Status === "Waiting QC"
+).length;
+
+
+const readyDeliveryCount = deliveryOrders.filter(
+  (order) =>
+    order.Delivery_Status === "Ready" ||
+    order.Delivery_Status === "Pending Delivery" ||
+    (!order.Delivery_Status &&
+      (order.QC_Status === "Approved" ||
+        order.Order_Status === "QC Approved"))
+).length;
+
+const outForDeliveryCount = deliveryOrders.filter(
+  (order) => order.Delivery_Status === "Out for Delivery"
+).length;
+
+const deliveredCount = deliveryOrders.filter(
+  (order) => order.Delivery_Status === "Delivered"
+).length;
+
+
+const lowStockAlertCount = inventoryData.filter((item) => {
+  const available = Number(item.Available_Stock || 0);
+  const reorder = Number(item.Reorder_Level || 0);
+
+  return available <= reorder;
+}).length;
+
+
+const outOfStockProducts = inventoryData.filter((item) => {
+  const available = Number(item.Available_Stock || 0);
+  return available <= 0;
+});
+
+const lowStockProducts = inventoryData.filter((item) => {
+  const available = Number(item.Available_Stock || 0);
+  const reorder = Number(item.Reorder_Level || 0);
+
+  return available > 0 && available <= reorder;
+});
+
+const pendingOrders = importedOrders.filter((order) => {
+  if (order.Order_Status !== "New Order") return false;
+
+  const orderDate = formatExcelDate(order.Order_Date);
+  const orderTime = order.Order_Time || "00:00";
+  const receivedAt = new Date(`${orderDate} ${orderTime}`);
+
+  if (Number.isNaN(receivedAt.getTime())) return false;
+
+  const hoursWaiting =
+    (Date.now() - receivedAt.getTime()) / (1000 * 60 * 60);
+
+  return hoursWaiting > 2;
+});
+
+const deliveryProblemStatuses = [
+  "Delivery Delayed",
+  "Not Received",
+  "Returned",
+  "Canceled",
+];
+
+const deliveryProblemOrders = importedOrders.filter((order) =>
+  deliveryProblemStatuses.includes(order.Delivery_Status)
+);
+
+const qcRejectedOrders = importedOrders.filter(
+  (order) => order.Order_Status === "Rejected by QC"
+);
+
+const recentlyUpdatedStock = inventoryData
+  .filter((item) => item.Last_Updated)
+  .sort(
+    (a, b) =>
+      new Date(b.Last_Updated) - new Date(a.Last_Updated)
+  )[0];
+
+
+const processingCount = processingOrders.filter(
+  (order) => order.Order_Status === "Processing"
+).length;
+
+const preparingCount = processingOrders.filter(
+  (order) => order.Order_Status === "Preparing"
+).length;
+
+const preparedCount = processingOrders.filter(
+  (order) => order.Order_Status === "Prepared"
+).length;
+
+const holdCount = processingOrders.filter(
+  (order) => order.Order_Status === "Hold"
+).length;
+
+const rejectedByQCCount = processingOrders.filter(
+  (order) => order.Order_Status === "Rejected by QC"
+).length;
+
+const handleAddStock = async () => {
+  if (!selectedStockItem) return;
+
+  const qtyToAdd = Number(addStockQty);
+
+  if (!qtyToAdd || qtyToAdd <= 0) {
+    alert("Please enter a valid quantity.");
+    return;
+  }
+
+  try {
+    const currentStock = Number(
+      selectedStockItem.Current_Stock || 0
+    );
+
+    const reservedStock = Number(
+      selectedStockItem.Reserved_Stock || 0
+    );
+
+    const newCurrentStock = currentStock + qtyToAdd;
+
+    const newAvailableStock =
+      newCurrentStock - reservedStock;
+
+    await updateInventoryStock(selectedStockItem, {
+      Current_Stock: newCurrentStock,
+      Available_Stock: newAvailableStock,
+    });
+
+    const latestInventory = inventoryData.map((item) =>
+  item.id === selectedStockItem.id
+    ? {
+        ...item,
+        Current_Stock: newCurrentStock,
+        Available_Stock: newAvailableStock,
+      }
+    : item
+);
+
+await recheckHoldOrders(latestInventory);
+
+    alert(
+      `${qtyToAdd} unit(s) added to ${selectedStockItem.Product_Name}.`
+    );
+
+    setSelectedStockItem(null);
+    setAddStockQty("");
+
+  } catch (error) {
+    console.error("Error adding stock:", error);
+    alert("Failed to add stock.");
+  }
+};
+
+const recheckHoldOrders = async (latestInventory) => {
+  const holdOrders = importedOrders.filter(
+    (order) => order.Order_Status === "Hold"
+  );
+
+  for (const order of holdOrders) {
+    const orderItems = order.items || [];
+
+    const enoughStock = orderItems.every((item) => {
+      const inventoryItem = latestInventory.find((stock) => {
+        const stockCode = String(stock.Product_Code || "")
+          .trim()
+          .toUpperCase();
+
+        const stockName = String(stock.Product_Name || "")
+          .trim()
+          .toUpperCase();
+
+        const orderCode = String(item.Product_Code || "")
+          .trim()
+          .toUpperCase();
+
+        const orderName = String(item.Product_Name || "")
+          .trim()
+          .toUpperCase();
+
+        return (
+          stockCode === orderCode ||
+          stockName === orderName
+        );
+      });
+
+      if (!inventoryItem) return false;
+
+      return (
+        Number(inventoryItem.Available_Stock || 0) >=
+        Number(item.Quantity || 0)
+      );
+    });
+
+    if (enoughStock) {
+      await handleProcessOrder(order, latestInventory);
+    }
+  }
+};
+
+const handleSendForRecheck = async () => {
+  if (!selectedRejectedOrder || sendingForRecheck) return;
+
+  if (!correctionNote.trim() || !correctionCompleted) {
+    alert("Please describe and confirm the corrections first.");
+    return;
+  }
+
+  setSendingForRecheck(true);
+
+  try {
+    const orderRef = doc(
+      db,
+      "orders",
+      selectedRejectedOrder.Order_ID
+    );
+
+    await updateDoc(orderRef, {
+      Order_Status: "Waiting QC",
+      QC_Status: "Recheck",
+      QC_Result: "Recheck",
+
+      QC_Viewed: false,
+
+      Operator_Correction_Note: correctionNote.trim(),
+      Operator_Corrected_At: new Date().toISOString(),
+
+      Sent_To_QC_At: new Date().toISOString(),
+    });
+
+    await addDoc(collection(db, "qc_inspections"), {
+      Order_ID: selectedRejectedOrder.Order_ID,
+      Customer_Name: selectedRejectedOrder.Customer_Name || "-",
+      items: selectedRejectedOrder.items || [],
+
+      QC_Result: "Recheck",
+      QC_Inspected_At: new Date().toISOString(),
+
+      QC_Reject_Note: selectedRejectedOrder.QC_Reject_Note || "",
+      Operator_Correction_Note: correctionNote.trim(),
+
+      QC_Rejected_Products:
+        selectedRejectedOrder.QC_Rejected_Products || [],
+
+      Inspector: "Pending QC Reinspection",
+    });
+
+    setImportedOrders((prevOrders) =>
+      prevOrders.map((order) =>
+        order.Order_ID === selectedRejectedOrder.Order_ID
+          ? {
+              ...order,
+              Order_Status: "Waiting QC",
+              QC_Status: "Recheck",
+              QC_Result: "Recheck",
+              Operator_Correction_Note: correctionNote.trim(),
+            }
+          : order
+      )
+    );
+
+    setSelectedRejectedOrder(null);
+    setCorrectionNote("");
+    setCorrectionCompleted(false);
+
+    alert("Order successfully sent to QC for reinspection.");
+  } catch (error) {
+    console.error("Error sending order for recheck:", error);
+    alert("Failed to send order for recheck.");
+  } finally {
+    setSendingForRecheck(false);
+  }
+};
 
   return (
     <div className="operator-layout">
@@ -828,16 +1229,7 @@ const filteredInventory = inventoryData.filter((item) => {
                 >
                 Delivery Status
                 </a>
-            <a
-                className={
-                    activePage === "alerts"
-                    ? "operator-active"
-                    : ""
-                }
-                onClick={() => setActivePage("alerts")}
-                >
-                Alerts
-                </a>
+  
             <a
                 className={
                     activePage === "reports"
@@ -897,7 +1289,7 @@ const filteredInventory = inventoryData.filter((item) => {
 
               <div className="operator-card">
                 <p>New Orders</p>
-                <h2>18</h2>
+                <h2>{newOrders.length}</h2>
 
                 <span className="operator-pink">
                   Waiting to process
@@ -907,7 +1299,7 @@ const filteredInventory = inventoryData.filter((item) => {
 
               <div className="operator-card">
                 <p>Processing</p>
-                <h2>12</h2>
+                <h2>{processingCount}</h2>
 
                 <span className="operator-blue">
                   In progress
@@ -917,7 +1309,7 @@ const filteredInventory = inventoryData.filter((item) => {
 
               <div className="operator-card">
                 <p>Waiting for QC</p>
-                <h2>9</h2>
+                <h2>{waitingQCCount}</h2>
 
                 <span className="operator-yellow">
                   Pending inspection
@@ -927,7 +1319,7 @@ const filteredInventory = inventoryData.filter((item) => {
 
               <div className="operator-card">
                 <p>Low Stock Alerts</p>
-                <h2>4</h2>
+                <h2>{lowStockAlertCount}</h2>
 
                 <span className="operator-red">
                   Attention required
@@ -945,76 +1337,358 @@ const filteredInventory = inventoryData.filter((item) => {
                   Order Processing Flow
                 </h3>
 
-                <div className="operator-flow">
+              <div
+                className="operator-flow"
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+                  gap: "20px",
+                  alignItems: "center",
+                }}
+              >
+                  
+              {[
+                { label: "New Orders", count: newOrders.length, color: "#fce7f3", text: "#be185d", col: 1, row: 1, arrow: "right" },
+                { label: "Processing", count: processingCount, color: "#dbeafe", text: "#1d4ed8", col: 2, row: 1, arrow: "right" },
+                { label: "Preparing", count: preparingCount, color: "#fef3c7", text: "#92400e", col: 3, row: 1, arrow: "down" },
+                { label: "Waiting QC", count: waitingQCCount, color: "#ede9fe", text: "#6d28d9", col: 3, row: 2, arrow: "left" },
+                { label: "Ready for Delivery", count: readyDeliveryCount, color: "#fce7f3", text: "#be185d", col: 2, row: 2, arrow: "left" },
+                { label: "Out for Delivery", count: outForDeliveryCount, color: "#dbeafe", text: "#1d4ed8", col: 1, row: 2, arrow: "down" },
+                { label: "Delivered", count: deliveredCount, color: "#dcfce7", text: "#166534", col: 1, row: 3, arrow: null },
+              ]
 
-                  <div className="flow-step flow-new">
-                    <span>18</span>
-                    <p>New Orders</p>
+                .map((step) => (
+                  <div
+                    key={step.label}
+                    style={{
+                      gridColumn: step.col,
+                      gridRow: step.row,
+                      position: "relative",
+                      background: step.color,
+                      color: step.text,
+                      borderRadius: "12px",
+                      padding: "20px 8px",
+                      textAlign: "center",
+                      minWidth: 0,
+                    }}
+                  >
+                    <h2 style={{ margin: "0 0 8px" }}>{step.count}</h2>
+
+                    <p style={{ margin: 0, fontSize: "12px", fontWeight: 600 }}>
+                      {step.label}
+                    </p>
+
+                    {step.arrow === "right" && (
+                      <span
+                        style={{
+                          position: "absolute",
+                          right: "-12px",
+                          top: "50%",
+                          transform: "translateY(-50%)",
+                          fontSize: "18px",
+                          color: "#888",
+                          zIndex: 2,
+                        }}
+                      >
+                        →
+                      </span>
+                    )}
+
+                    {step.arrow === "left" && (
+                      <span
+                        style={{
+                          position: "absolute",
+                          left: "-12px",
+                          top: "50%",
+                          transform: "translateY(-50%)",
+                          fontSize: "18px",
+                          color: "#888",
+                          zIndex: 2,
+                        }}
+                      >
+                        ←
+                      </span>
+                    )}
+
+                    {step.arrow === "down" && (
+                      <span
+                        style={{
+                          position: "absolute",
+                          bottom: "-17px",
+                          left: "50%",
+                          transform: "translateX(-50%)",
+                          fontSize: "22px",
+                          color: "#888",
+                          zIndex: 2,
+                        }}
+                      >
+                        ↓
+                      </span>
+                    )}
                   </div>
+                ))}
+              </div>
 
-                  <div className="flow-arrow">
-                    →
-                  </div>
 
-                  <div className="flow-step flow-processing">
-                    <span>12</span>
-                    <p>Processing</p>
-                  </div>
 
-                  <div className="flow-arrow">
-                    →
-                  </div>
-
-                  <div className="flow-step flow-prepared">
-                    <span>9</span>
-                    <p>Prepared</p>
-                  </div>
-
-                  <div className="flow-arrow">
-                    →
-                  </div>
-
-                  <div className="flow-step flow-qc">
-                    <span>9</span>
-                    <p>Waiting QC</p>
-                  </div>
-
-                </div>
 
               </div>
 
 
               <div className="operator-panel">
 
-                <h3>
-                  Operational Alerts
-                </h3>
+                
+              <h3>Operational Alerts</h3>
 
+              
+              {deliveryProblemOrders.length > 0 && (
                 <div className="operator-alert operator-danger-alert">
-                  <strong>Low Stock</strong>
+                  <div
+                    className="operator-alert-header"
+                    onClick={() =>
+                      setOpenAlert(
+                        openAlert === "deliveryProblems" ? null : "deliveryProblems"
+                      )
+                    }
+                  >
+                    <div>
+                      <strong>Delivery Problems: </strong>
+                      <span>
+                        {deliveryProblemOrders.length} order(s) have delivery problems.
+                      </span>
+                    </div>
 
-                  <p>
-                    Product A has only 8 units available.
-                  </p>
+                    <span className="operator-alert-toggle">
+                      {openAlert === "deliveryProblems" ? "−" : "+"}
+                    </span>
+                  </div>
+
+                  {openAlert === "deliveryProblems" && (
+                    <ul className="operator-alert-list">
+                      {deliveryProblemOrders.map((order) => (
+                        <li key={order.Order_ID}>
+                          <strong>{order.Order_ID}</strong>
+                          {" — "}
+                          {order.Customer_Name || "-"}
+                          {" — "}
+                          <span style={{ color: "#dc3545" }}>
+                            {order.Delivery_Status}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
                 </div>
+              )}
 
 
-                <div className="operator-alert operator-warning-alert">
-                  <strong>Order Pending</strong>
+              
+              {outOfStockProducts.length === 0 &&
+              lowStockProducts.length === 0 &&
+              pendingOrders.length === 0 &&
+              deliveryProblemOrders.length === 0 &&
+              qcRejectedOrders.length === 0 &&
+              !recentlyUpdatedStock ? (
 
-                  <p>
-                    3 orders have been pending for more than 2 hours.
-                  </p>
+                <div className="operator-alert operator-success-alert">
+                  <strong>No Active Alerts</strong>
+                  <p>All operations are currently running smoothly.</p>
                 </div>
+              ) : (
+                <>
+
+                
+              {qcRejectedOrders.length > 0 && (
+                <div className="operator-alert operator-danger-alert">
+                  <div
+                    className="operator-alert-header"
+                    onClick={() =>
+                      setOpenAlert(
+                        openAlert === "qcRejected" ? null : "qcRejected"
+                      )
+                    }
+                  >
+                    <div>
+                      <strong>QC Rejected Orders: </strong>
+                      <span>
+                        {qcRejectedOrders.length} order(s) require correction.
+                      </span>
+                    </div>
+
+                    <span className="operator-alert-toggle">
+                      {openAlert === "qcRejected" ? "−" : "+"}
+                    </span>
+                  </div>
+
+                  {openAlert === "qcRejected" && (
+                    <ul className="operator-alert-list">
+                      {qcRejectedOrders.map((order) => (
+                        <li key={order.Order_ID}>
+                          <strong>{order.Order_ID}</strong>
+                          {" — "}
+                          {order.Customer_Name || "-"}
+                          {" — "}
+                          <span style={{ color: "#dc3545" }}>
+                            Rejected by QC
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
 
 
+                  {outOfStockProducts.length > 0 && (
+                    <div className="operator-alert operator-danger-alert">
+                      <div
+                        className="operator-alert-header"
+                        onClick={() =>
+                          setOpenAlert(openAlert === "outOfStock" ? null : "outOfStock")
+                        }
+                      >
+                        <div>
+                          <strong>Out of Stock: </strong>
+                          <span>
+                            {outOfStockProducts.length} product(s) are out of stock.
+                          </span>
+                        </div>
+
+                        <span className="operator-alert-toggle">
+                          {openAlert === "outOfStock" ? "−" : "+"}
+                        </span>
+                      </div>
+
+                      {openAlert === "outOfStock" && (
+                        <ul className="operator-alert-list">
+                          {outOfStockProducts.map((item) => (
+                            <li key={item.id || item.Product_Code}>
+                              {item.Product_Name || item.Product_Code} — 0 units available
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  )}
+
+                  {lowStockProducts.length > 0 && (
+                    <div className="operator-alert operator-danger-alert">
+                      <div
+                        className="operator-alert-header"
+                        onClick={() =>
+                          setOpenAlert(openAlert === "lowStock" ? null : "lowStock")
+                        }
+                      >
+                        <div>
+                          <strong>Low Stock: </strong>
+                          <span>
+                            {lowStockProducts.length} product(s) are running low.
+                          </span>
+                        </div>
+
+                        <span className="operator-alert-toggle">
+                          {openAlert === "lowStock" ? "−" : "+"}
+                        </span>
+                      </div>
+
+                      {openAlert === "lowStock" && (
+                        <ul className="operator-alert-list">
+                          {lowStockProducts.map((item) => (
+                            <li key={item.id || item.Product_Code}>
+                              {item.Product_Name || item.Product_Code} —{" "}
+                              {Number(item.Available_Stock || 0)} units available
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  )}
+
+                  {pendingOrders.length > 0 && (
+                    <div className="operator-alert operator-warning-alert">
+                      <div
+                        className="operator-alert-header"
+                        onClick={() =>
+                          setOpenAlert(openAlert === "pendingOrders" ? null : "pendingOrders")
+                        }
+                      >
+                        
+                    <div>
+                      <strong>Order Pending: </strong>
+                      <span>
+                        {pendingOrders.length} order(s) have been waiting for more than 2 hours.
+                      </span>
+                    </div>
+
+
+                        <span className="operator-alert-toggle">
+                          {openAlert === "pendingOrders" ? "−" : "+"}
+                        </span>
+                      </div>
+
+                      {openAlert === "pendingOrders" && (
+                        <ul className="operator-alert-list">
+                          {pendingOrders.map((order) => (
+                            <li key={order.Order_ID}>
+                              {order.Order_ID} — {order.Customer_Name || "Unknown Customer"}
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  )}
+
+                  {recentlyUpdatedStock && (
+                    <div className="operator-alert operator-success-alert">
+                      <div
+                        className="operator-alert-header"
+                        onClick={() =>
+                          setOpenAlert(openAlert === "stockUpdated" ? null : "stockUpdated")
+                        }
+                      >
+                        
+                    <div>
+                      <strong>Stock Updated: </strong>
+                      <span>1 recent stock update detected.</span>
+                    </div>
+
+
+                        <span className="operator-alert-toggle">
+                          {openAlert === "stockUpdated" ? "−" : "+"}
+                        </span>
+                      </div>
+
+                      {openAlert === "stockUpdated" && (
+                        <ul className="operator-alert-list">
+                          <li>
+                            {recentlyUpdatedStock.Product_Name ||
+                              recentlyUpdatedStock.Product_Code}{" "}
+                            — updated on{" "}
+                            {new Date(recentlyUpdatedStock.Last_Updated).toLocaleString("en-GB")}
+                          </li>
+                        </ul>
+                      )}
+                    </div>
+                  )}
+                </>
+              )}
+
+              {recentlyUpdatedStock && (
                 <div className="operator-alert operator-success-alert">
                   <strong>Stock Updated</strong>
 
                   <p>
-                    Inventory for Product C was successfully updated.
+                    Inventory for{" "}
+                    {recentlyUpdatedStock.Product_Name ||
+                      recentlyUpdatedStock.Product_Code}{" "}
+                    was last updated on{" "}
+                    {new Date(
+                      recentlyUpdatedStock.Last_Updated
+                    ).toLocaleString("en-GB")}.
                   </p>
                 </div>
+              )}
+
 
               </div>
 
@@ -1029,147 +1703,90 @@ const filteredInventory = inventoryData.filter((item) => {
                   Current Orders
                 </h3>
 
-                <button className="operator-add-btn">
-                  + New Order
-                </button>
-
               </div>
 
 
-              <table>
+              
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Order ID</th>
+                      <th>Customer</th>
+                      <th>Product</th>
+                      <th>Status</th>
+                      <th>Order Date</th>
+                    </tr>
+                  </thead>
 
-                <thead>
-                  <tr>
-                    <th>Order ID</th>
-                    <th>Customer</th>
-                    <th>Product</th>
-                    <th>Qty</th>
-                    <th>Stock</th>
-                    <th>Status</th>
-                    <th>Action</th>
-                  </tr>
-                </thead>
+                  <tbody>
+                    {(() => {
+                      const currentOrders = importedOrders
+                        .filter((order) => {
+                          const completedStatuses = ["Delivered", "Canceled"];
 
+                          return (
+                            !completedStatuses.includes(order.Order_Status) &&
+                            !completedStatuses.includes(order.Delivery_Status)
+                          );
+                        })
+                        .sort((a, b) => {
+                          const dateA = new Date(
+                            `${formatExcelDate(a.Order_Date)} ${a.Order_Time || "00:00"}`
+                          );
 
-                <tbody>
+                          const dateB = new Date(
+                            `${formatExcelDate(b.Order_Date)} ${b.Order_Time || "00:00"}`
+                          );
 
-                  <tr>
+                          return (dateB.getTime() || 0) - (dateA.getTime() || 0);
+                        })
+                        .slice(0, 5);
 
-                    <td>ORD1058</td>
-                    <td>Aina</td>
-                    <td>Serum A</td>
-                    <td>2</td>
+                      return currentOrders.length > 0 ? (
+                        currentOrders.map((order) => {
+                          const productNames = (order.items || [])
+                            .map((item) => item.Product_Name)
+                            .filter(Boolean)
+                            .join(", ");
 
-                    <td>
-                      <span className="operator-status operator-green-status">
-                        Available
-                      </span>
-                    </td>
+                          const status =
+                            order.Delivery_Status === "Out for Delivery"
+                              ? "Out for Delivery"
+                              : ["Ready", "Pending Delivery"].includes(order.Delivery_Status)
+                              ? "Ready for Delivery"
+                              : order.Order_Status === "QC Approved"
+                              ? "Ready for Delivery"
+                              : order.Order_Status || "New Order";
 
-                    <td>
-                      <span className="operator-status operator-pink-status">
-                        New Order
-                      </span>
-                    </td>
+                          return (
+                            <tr key={order.id || order.Order_ID}>
+                              <td>{order.Order_ID}</td>
 
-                    <td>
-                      <button className="operator-action-btn">
-                        Process
-                      </button>
-                    </td>
+                              <td>{order.Customer_Name || "-"}</td>
 
-                  </tr>
+                              <td>{productNames || order.Product_Name || "-"}</td>
 
+                              <td>
+                                <span className="operator-status operator-blue-status">
+                                  {status}
+                                </span>
+                              </td>
 
-                  <tr>
+                              <td>{formatExcelDate(order.Order_Date)}</td>
+                            </tr>
+                          );
+                        })
+                      ) : (
+                        <tr>
+                          <td colSpan={5} style={{ textAlign: "center", padding: "20px" }}>
+                            No active orders.
+                          </td>
+                        </tr>
+                      );
+                    })()}
+                  </tbody>
+                </table>
 
-                    <td>ORD1059</td>
-                    <td>Farah</td>
-                    <td>Cleanser B</td>
-                    <td>1</td>
-
-                    <td>
-                      <span className="operator-status operator-green-status">
-                        Available
-                      </span>
-                    </td>
-
-                    <td>
-                      <span className="operator-status operator-blue-status">
-                        Processing
-                      </span>
-                    </td>
-
-                    <td>
-                      <button className="operator-action-btn">
-                        Update
-                      </button>
-                    </td>
-
-                  </tr>
-
-
-                  <tr>
-
-                    <td>ORD1060</td>
-                    <td>Amir</td>
-                    <td>Product C</td>
-                    <td>4</td>
-
-                    <td>
-                      <span className="operator-status operator-yellow-status">
-                        Low Stock
-                      </span>
-                    </td>
-
-                    <td>
-                      <span className="operator-status operator-yellow-status">
-                        Prepared
-                      </span>
-                    </td>
-
-                    <td>
-                      <button className="operator-action-btn">
-                        Send to QC
-                      </button>
-                    </td>
-
-                  </tr>
-
-
-                  <tr>
-
-                    <td>ORD1061</td>
-                    <td>Sofia</td>
-                    <td>Product D</td>
-                    <td>5</td>
-
-                    <td>
-                      <span className="operator-status operator-red-status">
-                        Insufficient
-                      </span>
-                    </td>
-
-                    <td>
-                      <span className="operator-status operator-red-status">
-                        Hold
-                      </span>
-                    </td>
-
-                    <td>
-                      <button
-                        className="operator-action-btn disabled-btn"
-                        disabled
-                      >
-                        Waiting Stock
-                      </button>
-                    </td>
-
-                  </tr>
-
-                </tbody>
-
-              </table>
 
             </div>
           </>
@@ -1312,131 +1929,205 @@ const filteredInventory = inventoryData.filter((item) => {
                       if (!file) return;
 
                       setImportFileName(file.name);
+                      localStorage.setItem("lastImportedFile", file.name);
 
                       const reader = new FileReader();
 
 
+                      
                       reader.onload = async (event) => {
+                        try {
+                          const data = new Uint8Array(event.target.result);
+                          const workbook = XLSX.read(data, { type: "array" });
+                          const worksheet = workbook.Sheets[workbook.SheetNames[0]];
 
-                        const data =
-                          new Uint8Array(event.target.result);
-
-
-                        const workbook =
-                          XLSX.read(data, {
-                            type: "array",
+                          const jsonData = XLSX.utils.sheet_to_json(worksheet, {
+                            defval: "",
                           });
 
-
-                        const firstSheetName =
-                          workbook.SheetNames[0];
-
-
-                        const worksheet =
-                          workbook.Sheets[firstSheetName];
-
-
-                        const jsonData =
-                          XLSX.utils.sheet_to_json(
-                            worksheet
+                          // Kenal pasti fail Excel berdasarkan kandungannya
+                          const fileHashBuffer = await crypto.subtle.digest(
+                            "SHA-256",
+                            data
                           );
 
+                          const fileHash = Array.from(
+                            new Uint8Array(fileHashBuffer)
+                          )
+                            .map((byte) => byte.toString(16).padStart(2, "0"))
+                            .join("");
 
-                        const groupedOrders =
-                          Object.values(
+                          if (jsonData.length === 0) {
+                            alert("Excel file is empty.");
+                            return;
+                          }
 
-                            jsonData.reduce(
-                              (acc, row) => {
+                          // Group existing Order IDs. Blank IDs are separate orders.
+                          const groupedMap = new Map();
 
-                                const orderId =
-                                  row.Order_ID;
+                          jsonData.forEach((row, index) => {
+                            const existingId = String(row.Order_ID ?? "").trim();
 
+                            const groupKey = existingId
+                              ? `EXISTING:${existingId}`
+                              : `AUTO:${index}`;
 
-                                if (!orderId) {
-                                  return acc;
-                                }
+                            if (!groupedMap.has(groupKey)) {
+                              groupedMap.set(groupKey, {
+                                Order_ID: existingId,
+                                Customer_Name: row.Customer_Name || "",
+                                Phone_Number: row.Phone_Number || "",
+                                Address: row.Address || "",
+                                Order_Date: row.Order_Date,
+                                Order_Time: row.Order_Time || "",
+                                Platform: row.Platform || "",
+                                items: [],
+                              });
+                            }
 
+                            groupedMap.get(groupKey).items.push({
+                              Product_Code: row.Product_Code || "",
+                              Product_Name: row.Product_Name || "",
+                              Quantity: Number(row.Quantity) || 0,
+                            });
+                          });
 
-                                if (!acc[orderId]) {
+                          const groupedOrders = Array.from(groupedMap.values());
 
-                                  acc[orderId] = {
+                          const ordersSnapshot = await getDocs(collection(db, "orders"));
+                          let maxOrderNumber = 0;
 
-                                    Order_ID:
-                                      orderId,
+                          const updateMax = (id) => {
+                            const match = /^ORD(\d+)$/i.exec(String(id || ""));
+                            if (match) {
+                              maxOrderNumber = Math.max(
+                                maxOrderNumber,
+                                Number(match[1])
+                              );
+                            }
+                          };
 
-                                    Customer_Name:
-                                      row.Customer_Name,
+                          ordersSnapshot.forEach((snapshot) => {
+                            updateMax(snapshot.id);
+                            updateMax(snapshot.data().Order_ID);
+                          });
 
-                                    Phone_Number:
-                                      row.Phone_Number,
+                          groupedOrders.forEach((order) => updateMax(order.Order_ID));
 
-                                    Address:
-                                      row.Address,
+                          const counterRef = doc(db, "system_counters", "order_id");
 
-                                    Order_Date:
-                                      row.Order_Date,
+                          let importedCount = 0;
+                          let skippedCount = 0;
 
-                                    Order_Time:
-                                      row.Order_Time,
+                          // Import orders with supplied IDs first.
+                          const orderedImports = [
+                            ...groupedOrders.filter((order) => order.Order_ID),
+                            ...groupedOrders.filter((order) => !order.Order_ID),
+                          ];
 
-                                    Platform:
-                                      row.Platform,
+                          for (const [importIndex, order] of orderedImports.entries()) {
+                            const result = await runTransaction(db, async (transaction) => {
+                              if (order.Order_ID) {
+                                const orderRef = doc(db, "orders", order.Order_ID);
+                                const existing = await transaction.get(orderRef);
 
-                                    items: [],
+                                if (existing.exists()) return null;
 
-                                  };
-                                }
-
-
-                                acc[orderId].items.push({
-
-                                  Product_Code:
-                                    row.Product_Code,
-
-                                  Product_Name:
-                                    row.Product_Name,
-
-                                  Quantity:
-                                    Number(
-                                      row.Quantity
-                                    ) || 0,
-
+                                transaction.set(orderRef, {
+                                  ...order,
+                                  Order_Date: formatExcelDate(order.Order_Date),
+                                  Order_Status: "New Order",
+                                  QC_Status: "Not Started",
                                 });
 
+                                return order.Order_ID;
+                              }
 
-                                return acc;
+                              // Semak sama ada order daripada fail ini pernah diimport
+                              const importRef = doc(
+                                db,
+                                "order_import_keys",
+                                `${fileHash}_${importIndex}`
+                              );
 
-                              },
-                              {}
-                            )
+                              const importedSnap = await transaction.get(importRef);
 
+                              if (importedSnap.exists()) {
+                                return null;
+                              }
+
+                              const counterSnapshot = await transaction.get(counterRef);
+
+                              const previousNumber = counterSnapshot.exists()
+                                ? Number(counterSnapshot.data().lastNumber || 0)
+                                : 0;
+
+                              let nextNumber =
+                                Math.max(previousNumber, maxOrderNumber) + 1;
+
+                              let newOrderRef = null;
+                              let generatedId = "";
+
+                              for (let attempt = 0; attempt < 1000; attempt++) {
+                                const candidate = `ORD${String(nextNumber).padStart(4, "0")}`;
+                                const candidateRef = doc(db, "orders", candidate);
+
+                                const candidateSnap = await transaction.get(candidateRef);
+
+                                if (!candidateSnap.exists()) {
+                                  newOrderRef = candidateRef;
+                                  generatedId = candidate;
+                                  break;
+                                }
+
+                                nextNumber++;
+                              }
+
+                              if (!newOrderRef) {
+                                throw new Error("Unable to generate a unique Order ID.");
+                              }
+
+                              transaction.set(counterRef, { lastNumber: nextNumber });
+
+                              // Simpan rekod supaya order tidak diimport dua kali
+                              transaction.set(importRef, {
+                                Order_ID: generatedId,
+                                File_Hash: fileHash,
+                                Import_Index: importIndex,
+                                Imported_At: new Date().toISOString(),
+                              });
+
+                              transaction.set(newOrderRef, {
+                                ...order,
+                                Order_ID: generatedId,
+                                Order_Date: formatExcelDate(order.Order_Date),
+                                Order_Status: "New Order",
+                                QC_Status: "Not Started",
+                              });
+
+                              return generatedId;
+                            });
+
+                            if (result) {
+                              importedCount++;
+                              updateMax(result);
+                            } else {
+                              skippedCount++;
+                            }
+                          }
+
+                          alert(
+                            `Import completed!\n` +
+                            `New orders: ${importedCount}\n` +
+                            `Existing orders skipped: ${skippedCount}`
                           );
 
-
-                        console.log(
-                          "Grouped Orders:",
-                          groupedOrders
-                        );
-
-
-                        setImportedOrders(
-                          groupedOrders
-                        );
-                        for (const order of groupedOrders) {
-                          await setDoc(doc(db, "orders", order.Order_ID), {
-                            Order_ID: order.Order_ID,
-                            Customer_Name: order.Customer_Name || "",
-                            Phone_Number: order.Phone_Number || "",
-                            Address: order.Address || "",
-                            Order_Date: formatExcelDate(order.Order_Date),
-                            Order_Time: order.Order_Time || "",
-                            Platform: order.Platform || "",
-                            items: order.items || [],
-                            Order_Status: "New Order",
-                          });
+                        } catch (error) {
+                          console.error("Excel import error:", error);
+                          alert("Import failed. Check console for details.");
                         }
-
                       };
+
 
 
                       reader.readAsArrayBuffer(
@@ -1479,27 +2170,19 @@ const filteredInventory = inventoryData.filter((item) => {
                 <input
                   type="text"
                   placeholder="Search Order ID or Customer..."
+                  value={newOrderSearch}
+                  onChange={(e) => setNewOrderSearch(e.target.value)}
                 />
 
 
-                <select>
-
-                  <option>
-                    All Platforms
-                  </option>
-
-                  <option>
-                    Shopee
-                  </option>
-
-                  <option>
-                    TikTok
-                  </option>
-
-                  <option>
-                    Other
-                  </option>
-
+                <select
+                  value={platformFilter}
+                  onChange={(e) => setPlatformFilter(e.target.value)}
+                >
+                  <option value="All">All Platforms</option>
+                  <option value="Shopee">Shopee</option>
+                  <option value="TikTok">TikTok</option>
+                  <option value="Website">Website</option>
                 </select>
 
               </div>
@@ -1512,42 +2195,16 @@ const filteredInventory = inventoryData.filter((item) => {
                 <thead>
 
                   <tr>
-
-                    <th>
-                      Order ID
-                    </th>
-
-                    <th>
-                      Customer
-                    </th>
-
-                    <th>
-                      Products
-                    </th>
-
-                    <th>
-                      Total Items
-                    </th>
-
-                    <th>
-                      Order Date
-                    </th>
-
-                    <th>
-                      Order Time
-                    </th>
-
-                    <th>
-                      Platform
-                    </th>
-
-                    <th>
-                      Order Status
-                    </th>
-
-                    <th>
-                      Action
-                    </th>
+                    <th>No.</th>
+                    <th>Order Date</th>
+                    <th>Order Time</th>
+                    <th>Order ID</th>
+                    <th>Customer</th>
+                    <th>Products</th>
+                    <th>Total Items</th>
+                    <th>Platform</th>
+                    <th>Order Status</th>
+                    <th>Action</th>
 
                   </tr>
 
@@ -1556,8 +2213,8 @@ const filteredInventory = inventoryData.filter((item) => {
 
                 <tbody>
 
-                  {newOrders.length > 0 ? (
-                    [...newOrders]
+                  {filteredNewOrders.length > 0 ? (
+                    [...filteredNewOrders]
                       .sort((a, b) => {
                         const dateA = new Date(
                           `${formatExcelDate(a.Order_Date)} ${a.Order_Time || "00:00"}`
@@ -1567,9 +2224,9 @@ const filteredInventory = inventoryData.filter((item) => {
                           `${formatExcelDate(b.Order_Date)} ${b.Order_Time || "00:00"}`
                         );
 
-                        return dateB - dateA;
+                        return dateA - dateB;
                       })
-                      .map((order) => {
+                      .map((order, index) => {
 
                         const totalItems =
                           order.items.reduce(
@@ -1589,16 +2246,23 @@ const filteredInventory = inventoryData.filter((item) => {
                             key={order.Order_ID}
                           >
 
+                            <td>{index + 1}</td>
+
+                            <td>
+                              {formatExcelDate(order.Order_Date)}
+                            </td>
+
+                            <td>
+                              {order.Order_Time || "-"}
+                            </td>
+
                             <td>
                               {order.Order_ID}
                             </td>
 
-
                             <td>
-                              {order.Customer_Name ||
-                                "-"}
+                              {order.Customer_Name || "-"}
                             </td>
-
 
                             <td>
                               {order.items
@@ -1606,20 +2270,8 @@ const filteredInventory = inventoryData.filter((item) => {
                                 .join(", ")}
                             </td>
 
-
                             <td>
                               {totalItems}
-                            </td>
-
-
-                            <td>
-                              {formatExcelDate(order.Order_Date)}
-                            </td>
-
-
-                            <td>
-                              {order.Order_Time ||
-                                "-"}
                             </td>
 
 
@@ -1672,7 +2324,7 @@ const filteredInventory = inventoryData.filter((item) => {
                     <tr>
 
                       <td
-                        colSpan="9"
+                        colSpan="10"
                         style={{
                           textAlign: "center",
                         }}
@@ -1925,7 +2577,7 @@ const filteredInventory = inventoryData.filter((item) => {
               {selectedOrder.Order_Status !== "Rejected by QC" && (
                 <button
                   className="operator-action-btn"
-                  onClick={handleProcessOrder}
+                  onClick={() => handleProcessOrder(selectedOrder)}
                 >
                   Process Order
                 </button>
@@ -1992,45 +2644,36 @@ const filteredInventory = inventoryData.filter((item) => {
             <div className="operator-summary-grid">
 
             <div className="operator-card">
-                <p>Processing</p>
-                <h2>12</h2>
-
-                <span className="operator-blue">
-                In progress
-                </span>
+              <p>Processing</p>
+              <h2>{processingCount}</h2>
+              <span className="operator-blue">In progress</span>
             </div>
-
 
             <div className="operator-card">
-                <p>Preparing</p>
-                <h2>7</h2>
-
-                <span className="operator-yellow">
-                Being prepared
-                </span>
+              <p>Preparing</p>
+              <h2>{preparingCount}</h2>
+              <span className="operator-yellow">Being prepared</span>
             </div>
-
 
             <div className="operator-card">
-                <p>Prepared</p>
-                <h2>9</h2>
-
-                <span className="operator-green">
-                Ready for QC
-                </span>
+              <p>Prepared</p>
+              <h2>{preparedCount}</h2>
+              <span className="operator-green">Ready for QC</span>
             </div>
-
 
             <div className="operator-card">
-                <p>On Hold</p>
-                <h2>3</h2>
-
-                <span className="operator-red">
-                Requires attention
-                </span>
+              <p>On Hold</p>
+              <h2>{holdCount}</h2>
+              <span className="operator-red">Requires attention</span>
             </div>
 
+            <div className="operator-card">
+              <p>Rejected by QC</p>
+              <h2>{rejectedByQCCount}</h2>
+              <span className="operator-red">Requires recheck</span>
             </div>
+
+          </div>
 
 
             {/* PROCESSING TABLE */}
@@ -2053,33 +2696,24 @@ const filteredInventory = inventoryData.filter((item) => {
             <div className="operator-processing-filters">
 
                 <input
-                type="text"
-                placeholder="Search Order ID or Customer..."
+                  type="text"
+                  placeholder="Search Order ID or Customer..."
+                  value={processingSearch}
+                  onChange={(e) => setProcessingSearch(e.target.value)}
                 />
 
 
-                <select>
-
-                <option>
-                    All Processing Status
-                </option>
-
-                <option>
-                    Processing
-                </option>
-
-                <option>
-                    Preparing
-                </option>
-
-                <option>
-                    Prepared
-                </option>
-
-                <option>
-                    Hold
-                </option>
-
+                <select
+                  value={processingStatusFilter}
+                  onChange={(e) => setProcessingStatusFilter(e.target.value)}
+                >
+                  <option value="All">All Processing Status</option>
+                  <option value="Processing">Processing</option>
+                  <option value="Preparing">Preparing</option>
+                  <option value="Prepared">Prepared</option>
+                  <option value="Hold">Hold</option>
+                  <option value="Waiting QC">Waiting QC</option>
+                  <option value="Rejected by QC">Rejected by QC</option>
                 </select>
 
             </div>
@@ -2097,6 +2731,7 @@ const filteredInventory = inventoryData.filter((item) => {
                     <th>Processed At</th>
                     <th>Stock Status</th>
                     <th>Processing Status</th>
+                    <th>QC Rejected At</th>
                     <th>Action</th>
                 </tr>
 
@@ -2105,25 +2740,74 @@ const filteredInventory = inventoryData.filter((item) => {
 
                 <tbody>
 
-                  {processingOrders.length > 0 ? (
-                    [...processingOrders]
-                      .sort(
-                        (a, b) =>
+                  {filteredProcessingOrders.length > 0 ? (
+                    [...filteredProcessingOrders]
+                      .sort((a, b) => {
+                        const aRejected = a.Order_Status === "Rejected by QC";
+                        const bRejected = b.Order_Status === "Rejected by QC";
+
+                        if (aRejected !== bRejected) {
+                          return aRejected ? -1 : 1;
+                        }
+
+                        if (aRejected && bRejected) {
+                          return (
+                            new Date(b.QC_Rejected_At || 0) -
+                            new Date(a.QC_Rejected_At || 0)
+                          );
+                        }
+
+                        return (
                           new Date(b.Processed_At || 0) -
                           new Date(a.Processed_At || 0)
-                      )
+                        );
+                      })
                       .map((order) => {
-                      const totalQty =
-                        order.items?.reduce(
-                          (total, item) => total + Number(item.Quantity || 0),
-                          0
-                        ) || 0;
 
-                      const productNames =
-                        order.items
-                          ?.map((item) => item.Product_Name)
-                          .filter(Boolean)
-                          .join(", ") || "-";
+                        const itemStockStatus = (order.items || []).map((item) => {
+                          const inventoryItem = inventoryData.find((stock) => {
+                            const stockCode = String(stock.Product_Code || "")
+                              .trim()
+                              .toUpperCase();
+
+                            const stockName = String(stock.Product_Name || "")
+                              .trim()
+                              .toUpperCase();
+
+                            const orderCode = String(item.Product_Code || "")
+                              .trim()
+                              .toUpperCase();
+
+                            const orderName = String(item.Product_Name || "")
+                              .trim()
+                              .toUpperCase();
+
+                            return (
+                              stockCode === orderCode ||
+                              stockName === orderName
+                            );
+                          });
+
+                          const available = Number(
+                            inventoryItem?.Available_Stock || 0
+                          );
+
+                          const qty = Number(item.Quantity || 0);
+
+                          let status = "Available";
+
+                          if (!inventoryItem || available <= 0) {
+                            status = "Out of Stock";
+                          } else if (available < qty) {
+                            status = "Insufficient";
+                          }
+
+                          return {
+                            ...item,
+                            available,
+                            status,
+                          };
+                        });
 
                       const processedDate = order.Processed_At
                         ? new Date(order.Processed_At)
@@ -2139,22 +2823,38 @@ const filteredInventory = inventoryData.filter((item) => {
                           </td>
 
                           <td>
-                            {productNames}
-                          </td>
+                            {(order.items || []).map((item, index) => (
+                              <div
+                                key={index}
+                                style={{ marginBottom: "8px" }}
+                              >
+                                {item.Product_Name || "-"}
+                              </div>
+                            ))}
+                          </td>      
 
                           <td>
-                            {totalQty}
+                            {(order.items || []).map((item, index) => (
+                              <div
+                                key={index}
+                                style={{ marginBottom: "8px" }}
+                              >
+                                {item.Quantity || 0}
+                              </div>
+                            ))}
                           </td>
 
                           <td>
                             {processedDate ? (
                               <>
                                 {processedDate.toLocaleDateString("en-GB")}
-                                <br />
-                                {processedDate.toLocaleTimeString([], {
-                                  hour: "2-digit",
-                                  minute: "2-digit",
-                                })}
+                                <div>
+                                  {processedDate.toLocaleTimeString("en-GB", {
+                                    hour: "2-digit",
+                                    minute: "2-digit",
+                                    hour12: true,
+                                  })}
+                                </div>
                               </>
                             ) : (
                               "-"
@@ -2162,18 +2862,29 @@ const filteredInventory = inventoryData.filter((item) => {
                           </td>
 
                           <td>
-                            <span
-                              className={
-                                order.Stock_Status === "Reserved"
-                                  ? "operator-status operator-green-status"
-                                  : "operator-status operator-red-status"
-                              }
-                            >
-                              {order.Stock_Status || "-"}
-                            </span>
+                            {itemStockStatus.map((item, index) => (
+                              <div
+                                key={index}
+                                style={{ marginBottom: "8px" }}
+                              >
+                                <span
+                                  className={
+                                    item.status === "Available"
+                                      ? "operator-status operator-green-status"
+                                      : "operator-status operator-red-status"
+                                  }
+                                >
+                                  {item.status === "Available"
+                                    ? `Available (${item.available})`
+                                    : item.status === "Out of Stock"
+                                    ? "Out of Stock"
+                                    : `Insufficient (${item.available})`}
+                                </span>
+                              </div>
+                            ))}
                           </td>
 
-                          <td>
+                          <td style={{ textAlign: "center" }}>
                             <span
                               className={
                                 order.Order_Status === "Rejected by QC"
@@ -2185,8 +2896,29 @@ const filteredInventory = inventoryData.filter((item) => {
                                   : "operator-status operator-blue-status"
                               }
                             >
-                              {order.Order_Status}
+                              {order.Order_Status === "Waiting QC" &&
+                              order.QC_Status === "Recheck"
+                                ? "Recheck Sent to QC"
+                                : order.Order_Status}
                             </span>
+                          </td>
+
+                          <td>
+                            {order.QC_Rejected_At &&
+                            order.Order_Status === "Rejected by QC" ? (
+                              <>
+                                {new Date(order.QC_Rejected_At).toLocaleDateString("en-GB")}
+                                <div>
+                                  {new Date(order.QC_Rejected_At).toLocaleTimeString("en-GB", {
+                                    hour: "2-digit",
+                                    minute: "2-digit",
+                                    hour12: true,
+                                  })}
+                                </div>
+                              </>
+                            ) : (
+                              "-"
+                            )}
                           </td>
 
                          <td>
@@ -2228,23 +2960,20 @@ const filteredInventory = inventoryData.filter((item) => {
                                   cursor: "not-allowed",
                                 }}
                               >
-                                Sent to QC
-                              </button>
-                            )}
-
-                            {order.Order_Status === "Hold" && (
-                              <button
-                                className="operator-action-btn"
-                                onClick={() => handleProcessOrder(order)}
-                              >
-                                Recheck Stock
+                                {order.QC_Status === "Recheck"
+                                  ? "Recheck Sent"
+                                  : "Sent to QC"}
                               </button>
                             )}
 
                             {order.Order_Status === "Rejected by QC" && (
                               <button
                                 className="operator-action-btn"
-                                onClick={() => setSelectedOrder(order)}
+                                onClick={() => {
+                                  setSelectedRejectedOrder(order);
+                                  setCorrectionNote("");
+                                  setCorrectionCompleted(false);
+                                }}
                               >
                                 View Details
                               </button>
@@ -2273,12 +3002,337 @@ const filteredInventory = inventoryData.filter((item) => {
         </>
         )}
 
+        {/* ORDER REJECTION DETAILS MODAL */}
+
+        {selectedRejectedOrder && (
+          <div className="operator-modal-overlay">
+            <div className="operator-modal">
+
+              <div className="operator-modal-header">
+                <h3>Order Rejection Details</h3>
+
+                <button
+                  className="operator-modal-close"
+                  onClick={() => setSelectedRejectedOrder(null)}
+                >
+                  ×
+                </button>
+              </div>
+
+              <div className="operator-modal-info">
+                <p>
+                  <strong>Order ID:</strong>{" "}
+                  {selectedRejectedOrder.Order_ID}
+                </p>
+
+                <p>
+                  <strong>Customer:</strong>{" "}
+                  {selectedRejectedOrder.Customer_Name || "-"}
+                </p>
+
+                <p>
+                  <strong>QC Status:</strong> Rejected by QC
+                </p>
+
+                <p>
+                  <strong>Rejected At:</strong>{" "}
+                  {selectedRejectedOrder.QC_Rejected_At
+                    ? new Date(
+                        selectedRejectedOrder.QC_Rejected_At
+                      ).toLocaleString("en-GB")
+                    : "-"}
+                </p>
+              </div>
+
+              <h4>Products in Order</h4>
+
+              <div className="operator-rejection-products">
+                {(selectedRejectedOrder.items || []).map((item, index) => (
+                  <div key={index} className="operator-rejection-product-row">
+                    <span>{item.Product_Name || "-"}</span>
+                    <strong>{item.Quantity || 0}</strong>
+                  </div>
+                ))}
+              </div>
+
+              
+              <h4>Products Rejected by QC</h4>
+
+              <div className="operator-rejection-products">
+                {(selectedRejectedOrder.QC_Rejected_Products || []).length > 0 ? (
+                  selectedRejectedOrder.QC_Rejected_Products.map((product, index) => {
+                    const inspection = (
+                      selectedRejectedOrder.QC_Product_Inspections || []
+                    ).find(
+                      (item) => item.productName === product.Product_Name
+                    );
+
+                    const checklist = inspection?.checklist;
+                    const reasons = [];
+
+                    if (checklist) {
+                      if (checklist.correctProduct === false)
+                        reasons.push("Wrong Product");
+
+                      if (checklist.correctQuantity === false)
+                        reasons.push("Quantity Mismatch");
+
+                      if (checklist.productConditionGood === false)
+                        reasons.push("Product Damaged");
+
+                      if (checklist.packagingGood === false)
+                        reasons.push("Damaged Packaging");
+
+                      if (checklist.expiryDateValid === false)
+                        reasons.push("Expiry Issue");
+                    }
+
+                    const rejectionReason =
+                      reasons.length > 0
+                        ? reasons.join(", ")
+                        : (product.Rejection_Reasons || []).join(", ") ||
+                          "No specific reason recorded";
+
+                    return (
+                      <div
+                        key={index}
+                        style={{
+                          backgroundColor: "#fff0f3",
+                          borderLeft: "4px solid #dc3545",
+                          padding: "14px",
+                          borderRadius: "8px",
+                          marginBottom: "10px",
+                          width: "100%",
+                          boxSizing: "border-box",
+                        }}
+                      >
+                        <div
+                          style={{
+                            display: "flex",
+                            justifyContent: "space-between",
+                            alignItems: "flex-start",
+                            gap: "16px",
+                          }}
+                        >
+                          <strong style={{ flex: 1 }}>
+                            {product.Product_Name || "-"}
+                          </strong>
+
+                          <strong
+                            style={{
+                              color: "#dc3545",
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            Qty: {product.Quantity || 0} — Rejected
+                          </strong>
+                        </div>
+
+                        <div
+                          style={{
+                            display: "flex",
+                            alignItems: "baseline",
+                            gap: "8px",
+                            marginTop: "12px",
+                          }}
+                        >
+                          <strong style={{ flexShrink: 0 }}>
+                            Rejection Reason:
+                          </strong>
+
+                          <span style={{ color: "#dc3545", flex: 1 }}>
+                            {rejectionReason}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })
+                ) : (
+                  <p>No product-specific rejection details recorded.</p>
+                )}
+              </div>
+
+
+              <h4>QC Inspection Checklist</h4>
+
+              {(selectedRejectedOrder.QC_Product_Inspections || []).length > 0 ? (
+                selectedRejectedOrder.QC_Product_Inspections.map((product, index) => (
+                  <div key={index} style={{ marginBottom: "20px" }}>
+
+                    <h4>
+                      {product.productName || "Unknown Product"} —{" "}
+                      {product.result}
+                    </h4>
+
+                    <div className="operator-rejection-checklist">
+                      {[
+                        ["Correct Product", "correctProduct"],
+                        ["Correct Quantity", "correctQuantity"],
+                        ["Product Condition Good", "productConditionGood"],
+                        ["Packaging Good", "packagingGood"],
+                        ["Expiry Date Valid", "expiryDateValid"],
+                      ].map(([label, key]) => (
+                        <div key={key}>
+                          <span>{label}</span>
+
+                          <strong
+                            style={{
+                              color: product.checklist?.[key]
+                                ? "green"
+                                : "red",
+                            }}
+                          >
+                            {product.checklist?.[key]
+                              ? "Passed"
+                              : "Failed"}
+                          </strong>
+                        </div>
+                      ))}
+                    </div>
+
+                  </div>
+                ))
+              ) : (
+                <p>No product-specific inspection checklist recorded.</p>
+              )}
+
+              <h4>Operator Correction</h4>
+
+              <textarea
+                value={correctionNote}
+                onChange={(e) => setCorrectionNote(e.target.value)}
+                placeholder="Describe the corrections made to this order..."
+                rows={4}
+                style={{ width: "100%", padding: "12px" }}
+              />
+
+              <label className="operator-correction-confirm">
+                <input
+                  type="checkbox"
+                  checked={correctionCompleted}
+                  onChange={(e) => setCorrectionCompleted(e.target.checked)}
+                />
+
+                <span>
+                  I confirm that the order corrections have been completed.
+                </span>
+              </label>
+
+              <div className="operator-recheck-actions">
+
+                <button
+                  className="operator-recheck-close-btn"
+                  onClick={() => setSelectedRejectedOrder(null)}
+                >
+                  Close
+                </button>
+
+                <button
+                  className="operator-recheck-send-btn"
+                  onClick={handleSendForRecheck}
+                  disabled={
+                    !correctionCompleted ||
+                    !correctionNote.trim() ||
+                    sendingForRecheck
+                  }
+                >
+                  Send for Recheck
+                </button>
+
+              </div>
+
+            </div>
+          </div>
+        )}
+
         {/* =========================
             INVENTORY
         ========================== */}
 
         {activePage === "inventory" && (
         <>
+
+        {selectedStockItem && (
+          <div className="operator-modal-overlay">
+            <div className="operator-modal">
+
+              <div className="operator-modal-header">
+                <h3>Add Stock</h3>
+
+                <button
+                  className="operator-modal-close"
+                  onClick={() => {
+                    setSelectedStockItem(null);
+                    setAddStockQty("");
+                  }}
+                >
+                  ×
+                </button>
+              </div>
+
+              <div className="operator-modal-info">
+                <p>
+                  <strong>Product:</strong>{" "}
+                  {selectedStockItem.Product_Name}
+                </p>
+
+                <p>
+                  <strong>Product ID:</strong>{" "}
+                  {selectedStockItem.Product_Code}
+                </p>
+
+                <p>
+                  <strong>Current Stock:</strong>{" "}
+                  {selectedStockItem.Current_Stock || 0}
+                </p>
+
+                <p>
+                  <strong>Available Stock:</strong>{" "}
+                  {selectedStockItem.Available_Stock || 0}
+                </p>
+              </div>
+
+              <div style={{ marginTop: "20px" }}>
+                <label>
+                  <strong>Add Quantity</strong>
+                </label>
+
+                <input
+                  type="number"
+                  min="1"
+                  value={addStockQty}
+                  onChange={(e) => setAddStockQty(e.target.value)}
+                  placeholder="Enter quantity"
+                  style={{
+                    width: "100%",
+                    marginTop: "8px",
+                    padding: "10px",
+                  }}
+                />
+              </div>
+
+              <div className="operator-modal-actions" style={{ marginTop: "20px" }}>
+                <button
+                  className="operator-modal-cancel"
+                  onClick={() => {
+                    setSelectedStockItem(null);
+                    setAddStockQty("");
+                  }}
+                >
+                  Cancel
+                </button>
+
+                <button
+                  className="operator-action-btn"
+                  onClick={handleAddStock}
+                >
+                  Add Stock
+                </button>
+              </div>
+
+            </div>
+          </div>
+        )}
             <div className="operator-topbar">
 
             <div>
@@ -2288,12 +3342,6 @@ const filteredInventory = inventoryData.filter((item) => {
                 Check current stock availability for order processing
               </p>
 
-              <button
-                className="operator-action-btn"
-                onClick={syncInventoryToFirebase}
-              >
-                Sync Inventory
-              </button>
             </div>
 
 
@@ -2313,157 +3361,55 @@ const filteredInventory = inventoryData.filter((item) => {
             </div>
 
 
-            {/* SUMMARY */}
+            {/* INVENTORY TOP SECTION */}
 
-            <div className="operator-summary-grid">
+            <div className="operator-inventory-top-grid">
 
-            <div className="operator-card">
-                <p>Total Products</p>
-                <h2>{totalProducts}</h2>
+              {/* LEFT - SUMMARY CARDS */}
+              <div className="operator-inventory-summary-grid">
 
-                <span className="operator-pink">
-                Active products
-                </span>
-            </div>
+                <div className="operator-card">
+                  <p>Total Products</p>
+                  <h2>{totalProducts}</h2>
 
-
-            <div className="operator-card">
-                <p>Available Stock</p>
-                <h2>{totalAvailableStock}</h2>
-
-                <span className="operator-green">
-                Ready for orders
-                </span>
-            </div>
-
-
-            <div className="operator-card">
-                <p>Low Stock</p>
-                <h2>{lowStockCount}</h2>
-
-                <span className="operator-yellow">
-                Monitor closely
-                </span>
-            </div>
-
-
-            <div className="operator-card">
-                <p>Out of Stock</p>
-                <h2>{outOfStockCount}</h2>
-
-                <span className="operator-red">
-                Cannot process orders
-                </span>
-            </div>
-
-            </div>
-
-
-            {/* STOCK ALERTS */}
-
-            <div className="operator-dashboard-grid">
-
-            <div className="operator-panel">
-
-                <h3>Stock Overview</h3>
-
-                <div className="operator-inventory-filters">
-
-                  <input
-                    type="text"
-                    placeholder="Search Product ID or Product Name..."
-                    value={inventorySearch}
-                    onChange={(e) =>
-                      setInventorySearch(e.target.value)
-                    }
-                  />
-
-                  <select
-                    value={stockFilter}
-                    onChange={(e) =>
-                      setStockFilter(e.target.value)
-                    }
-                  >
-                    <option value="All">All Stock Status</option>
-                    <option value="Available">Available</option>
-                    <option value="Low Stock">Low Stock</option>
-                    <option value="Critical">Critical</option>
-                    <option value="Out of Stock">Out of Stock</option>
-                  </select>
-
-                </div>
-
-                <div className="operator-inventory-list">
-                  {filteredInventory.map((item) => {
-                    const available = Number(item.Available_Stock || 0);
-                    const reorder = Number(item.Reorder_Level || 0);
-                    const safety = Number(item.Safety_Stock || 0);
-
-                    let statusText = "Available";
-                    let statusClass = "operator-green-status";
-
-                    if (available <= 0) {
-                      statusText = "Out of Stock";
-                      statusClass = "operator-red-status";
-                    } else if (available <= safety) {
-                      statusText = "Critical";
-                      statusClass = "operator-red-status";
-                    } else if (available <= reorder) {
-                      statusText = "Low Stock";
-                      statusClass = "operator-yellow-status";
-                    }
-
-                    return (
-                      <div
-                        className="operator-inventory-item"
-                        key={item.Product_Code}
-                      >
-                        <div>
-                          <strong>{item.Product_Name}</strong>
-                          <p>{item.Product_Code}</p>
-                        </div>
-
-                        <span
-                          className={`operator-status ${statusClass}`}
-                        >
-                          {available} {statusText}
-                        </span>
-                      </div>
-                    );
-                    })}
-                </div>
-
+                  <span className="operator-pink">
+                    Active products
+                  </span>
                 </div>
 
 
-                <div className="operator-panel">
+                <div className="operator-card">
+                  <p>Available Stock</p>
+                  <h2>{totalAvailableStock}</h2>
 
-                  <h3>Inventory Alerts</h3>
-
-                  <div className="operator-alert operator-danger-alert">
-                    <strong>Critical Stock</strong>
-                    <p>
-                      Products with critically low stock require attention.
-                    </p>
-                  </div>
-
-                  <div className="operator-alert operator-warning-alert">
-                    <strong>Low Stock Warning</strong>
-                    <p>
-                      Some products are approaching their reorder level.
-                    </p>
-                  </div>
-
-                  <div className="operator-alert operator-success-alert">
-                    <strong>Stock Stable</strong>
-                    <p>
-                      Other products currently have sufficient stock.
-                    </p>
-                  </div>
-
+                  <span className="operator-green">
+                    Ready for orders
+                  </span>
                 </div>
 
+
+                <div className="operator-card">
+                  <p>Low Stock</p>
+                  <h2>{lowStockCount}</h2>
+
+                  <span className="operator-yellow">
+                    Monitor closely
+                  </span>
                 </div>
+
+
+                <div className="operator-card">
+                  <p>Out of Stock</p>
+                  <h2>{outOfStockCount}</h2>
+
+                  <span className="operator-red">
+                    Cannot process orders
+                  </span>
+                </div>
+
+              </div>
+
+            </div>
 
 
                 {/* INVENTORY TABLE */}
@@ -2472,13 +3418,78 @@ const filteredInventory = inventoryData.filter((item) => {
 
             <div className="operator-section-header">
 
-                <div>
+              <div>
                 <h3>Product Inventory</h3>
 
                 <p className="operator-section-subtitle">
-                    View available and reserved stock for active products
+                  View available and reserved stock for active products
                 </p>
-                </div>
+              </div>
+
+              <div className="operator-import-area">
+
+                <input
+                  type="file"
+                  accept=".xlsx,.xls"
+                  id="stock-file-input"
+                  style={{ display: "none" }}
+                  onChange={async (e) => {
+                    const file = e.target.files[0];
+
+                    if (!file) return;
+
+                    const reader = new FileReader();
+
+                    
+                    reader.onload = async (event) => {
+                      try {
+                        const data = new Uint8Array(event.target.result);
+                        const workbook = XLSX.read(data, { type: "array" });
+                        const worksheet = workbook.Sheets[workbook.SheetNames[0]];
+
+                        const stockData = XLSX.utils.sheet_to_json(worksheet);
+
+                        for (const item of stockData) {
+                          const productCode = String(item.Product_Code || "").trim();
+
+                          if (!productCode) continue;
+
+                          const productRef = doc(db, "inventory", productCode);
+
+                          await setDoc(
+                            productRef,
+                            {
+                              Product_Code: productCode,
+                              Product_Name: item.Product_Name || "",
+                              Current_Stock: Number(item.Current_Stock || 0),
+                              Reserved_Stock: Number(item.Reserved_Stock || 0),
+                              Available_Stock: Number(item.Available_Stock || 0),
+                              Reorder_Level: Number(item.Reorder_Level || 0),
+                            },
+                            { merge: true }
+                          );
+                        }
+
+                        alert("Stock imported successfully.");
+                      } catch (error) {
+                        console.error("Stock import error:", error);
+                        alert("Failed to import stock.");
+                      }
+                    };
+
+                    reader.readAsArrayBuffer(file);
+
+                  }}
+                />
+
+                <label
+                  htmlFor="stock-file-input"
+                  className="operator-import-btn"
+                >
+                  Import Stock Excel
+                </label>
+
+              </div>
 
             </div>
 
@@ -2537,6 +3548,7 @@ const filteredInventory = inventoryData.filter((item) => {
                     <th>Minimum Stock</th>
                     <th>Status</th>
                     <th>Last Updated</th>
+                    <th>Add Stock</th>
                 </tr>
 
                 </thead>
@@ -2598,6 +3610,16 @@ const filteredInventory = inventoryData.filter((item) => {
                             "-"
                           )}
                         </td>
+
+                        <td>
+                          <button
+                            className="operator-action-btn"
+                            onClick={() => setSelectedStockItem(item)}
+                          >
+                            + Add
+                          </button>
+                        </td>
+
                       </tr>
                     );
                   })}
@@ -2796,39 +3818,30 @@ const filteredInventory = inventoryData.filter((item) => {
             </div>
 
 
+            
             <div className="operator-delivery-filters">
-
-                <input
+              <input
                 type="text"
-                placeholder="Search Order ID or Customer..."
-                />
+                placeholder="Search Order ID, Customer or Product..."
+                value={deliverySearch}
+                onChange={(e) => setDeliverySearch(e.target.value)}
+              />
 
-
-                <select>
-
-                <option>
-                    All Delivery Status
-                </option>
-
-                <option>
-                    Ready for Delivery
-                </option>
-
-                <option>
-                    Out for Delivery
-                </option>
-
-                <option>
-                    Delivered
-                </option>
-
-                <option>
-                    Delayed
-                </option>
-
-                </select>
-
+              <select
+                value={deliveryStatusFilter}
+                onChange={(e) => setDeliveryStatusFilter(e.target.value)}
+              >
+                <option value="All">All Delivery Status</option>
+                <option value="Ready">Ready</option>
+                <option value="Out for Delivery">Out for Delivery</option>
+                <option value="Delivered">Delivered</option>
+                <option value="Delivery Delayed">Delivery Delayed</option>
+                <option value="Not Received">Not Received</option>
+                <option value="Returned">Returned</option>
+                <option value="Canceled">Canceled</option>
+              </select>
             </div>
+
 
 
             <table>
@@ -2850,24 +3863,22 @@ const filteredInventory = inventoryData.filter((item) => {
 
 
                 <tbody>
-                  {deliveryOrders.length > 0 ? (
-                    [...deliveryOrders]
-                      .sort(
-                        (a, b) =>
-                          new Date(
-                            b.Delivery_Updated_At ||
-                            b.QC_Completed_At ||
-                            b.Sent_To_QC_At ||
-                            0
-                          ) -
-                          new Date(
-                            a.Delivery_Updated_At ||
-                            a.QC_Completed_At ||
-                            a.Sent_To_QC_At ||
-                            0
-                          )
-                      )
-                      .map((order) => {
+                 {filteredDeliveryOrders.length > 0 ? (
+                   
+                  [...filteredDeliveryOrders]
+                    .sort((a, b) => {
+                      const dateA = new Date(
+                        `${formatExcelDate(a.Order_Date)} ${a.Order_Time || "00:00"}`
+                      );
+
+                      const dateB = new Date(
+                        `${formatExcelDate(b.Order_Date)} ${b.Order_Time || "00:00"}`
+                      );
+
+                      return dateA - dateB;
+                    })
+                    .map((order) => {
+
                       const totalQty =
                         order.items?.reduce(
                           (total, item) => total + Number(item.Quantity || 0),
@@ -2958,10 +3969,20 @@ const filteredInventory = inventoryData.filter((item) => {
                               </button>
                             )}
 
+                            
                             {deliveryStatus === "Out for Delivery" && (
-                              <div className="operator-delivery-actions">
+                              <div
+                                className="operator-delivery-actions"
+                                style={{
+                                  display: "flex",
+                                  alignItems: "center",
+                                  gap: "8px",
+                                  flexWrap: "nowrap",
+                                }}
+                              >
                                 <button
                                   className="operator-action-btn"
+                                  style={{ whiteSpace: "nowrap", flexShrink: 0 }}
                                   onClick={() => handleDeliveryStatus(order, "Delivered")}
                                 >
                                   Delivered
@@ -2969,6 +3990,11 @@ const filteredInventory = inventoryData.filter((item) => {
 
                                 <select
                                   className="operator-delivery-problem-select"
+                                  style={{
+                                    width: "115px",
+                                    minWidth: "115px",
+                                    flexShrink: 0,
+                                  }}
                                   defaultValue=""
                                   onChange={(e) => {
                                     if (e.target.value) {
@@ -2977,21 +4003,14 @@ const filteredInventory = inventoryData.filter((item) => {
                                   }}
                                 >
                                   <option value="">Problem</option>
-                                  <option value="Delivery Delayed">
-                                    Delivery Delayed
-                                  </option>
-                                  <option value="Not Received">
-                                    Not Received
-                                  </option>
-                                  <option value="Returned">
-                                    Returned
-                                  </option>
-                                  <option value="Canceled">
-                                    Canceled
-                                  </option>
+                                  <option value="Delivery Delayed">Delivery Delayed</option>
+                                  <option value="Not Received">Not Received</option>
+                                  <option value="Returned">Returned</option>
+                                  <option value="Canceled">Canceled</option>
                                 </select>
                               </div>
                             )}
+
 
                             {deliveryStatus === "Delivery Delayed" && (
                               <>
@@ -3059,441 +4078,7 @@ const filteredInventory = inventoryData.filter((item) => {
         </>
         )}
 
-        {/* =========================
-            ALERTS
-        ========================== */}
-
-        {activePage === "alerts" && (
-        <>
-            <div className="operator-topbar">
-
-            <div>
-                <h1>Alerts</h1>
-
-                <p>
-                Monitor operational issues that require operator attention
-                </p>
-            </div>
-
-
-            <div className="operator-profile">
-
-                <div className="operator-profile-circle">
-                O
-                </div>
-
-                <div>
-                <strong>Operator</strong>
-                <p>operator001</p>
-                </div>
-
-            </div>
-
-            </div>
-
-
-            {/* SUMMARY */}
-
-            <div className="operator-summary-grid">
-
-            <div className="operator-card">
-                <p>Total Alerts</p>
-                <h2>14</h2>
-
-                <span className="operator-pink">
-                Active notifications
-                </span>
-            </div>
-
-
-            <div className="operator-card">
-                <p>Critical</p>
-                <h2>4</h2>
-
-                <span className="operator-red">
-                Immediate attention
-                </span>
-            </div>
-
-
-            <div className="operator-card">
-                <p>Warnings</p>
-                <h2>7</h2>
-
-                <span className="operator-yellow">
-                Monitor closely
-                </span>
-            </div>
-
-
-            <div className="operator-card">
-                <p>Resolved Today</p>
-                <h2>9</h2>
-
-                <span className="operator-green">
-                Completed actions
-                </span>
-            </div>
-
-            </div>
-
-
-            {/* ALERT OVERVIEW */}
-
-            <div className="operator-dashboard-grid">
-
-            <div className="operator-panel">
-
-                <h3>Alert Categories</h3>
-
-                <div className="operator-alert-category-list">
-
-                <div className="operator-alert-category-item">
-
-                    <div>
-                    <strong>Stock Issues</strong>
-                    <p>Low, critical or insufficient inventory</p>
-                    </div>
-
-                    <span className="operator-status operator-red-status">
-                    5 Alerts
-                    </span>
-
-                </div>
-
-
-                <div className="operator-alert-category-item">
-
-                    <div>
-                    <strong>Order Delay</strong>
-                    <p>Orders taking longer than expected to process</p>
-                    </div>
-
-                    <span className="operator-status operator-yellow-status">
-                    4 Alerts
-                    </span>
-
-                </div>
-
-
-                <div className="operator-alert-category-item">
-
-                    <div>
-                    <strong>Delivery Delay</strong>
-                    <p>Orders delayed during delivery</p>
-                    </div>
-
-                    <span className="operator-status operator-yellow-status">
-                    3 Alerts
-                    </span>
-
-                </div>
-
-
-                <div className="operator-alert-category-item">
-
-                    <div>
-                    <strong>QC Return</strong>
-                    <p>Orders returned for correction or recheck</p>
-                    </div>
-
-                    <span className="operator-status operator-red-status">
-                    2 Alerts
-                    </span>
-
-                </div>
-
-                </div>
-
-            </div>
-
-
-            <div className="operator-panel">
-
-                <h3>Priority Alerts</h3>
-
-                <div className="operator-alert operator-danger-alert">
-                <strong>Insufficient Stock</strong>
-
-                <p>
-                    ORD1072 cannot continue because Product C stock is insufficient.
-                </p>
-                </div>
-
-
-                <div className="operator-alert operator-danger-alert">
-                <strong>QC Recheck Required</strong>
-
-                <p>
-                    ORD1064 was returned by QC and requires correction.
-                </p>
-                </div>
-
-
-                <div className="operator-alert operator-warning-alert">
-                <strong>Processing Delay</strong>
-
-                <p>
-                    ORD1068 has been in processing for more than 2 hours.
-                </p>
-                </div>
-
-            </div>
-
-            </div>
-
-
-            {/* ALERT TABLE */}
-
-            <div className="operator-panel">
-
-            <div className="operator-section-header">
-
-                <div>
-                <h3>Operational Alerts</h3>
-
-                <p className="operator-section-subtitle">
-                    Review alerts and take the required operational action
-                </p>
-                </div>
-
-            </div>
-
-
-            <div className="operator-alert-filters">
-
-                <input
-                type="text"
-                placeholder="Search Alert ID or Order ID..."
-                />
-
-
-                <select>
-
-                <option>
-                    All Alert Types
-                </option>
-
-                <option>
-                    Stock Issue
-                </option>
-
-                <option>
-                    Order Delay
-                </option>
-
-                <option>
-                    Delivery Delay
-                </option>
-
-                <option>
-                    QC Return
-                </option>
-
-                </select>
-
-
-                <select>
-
-                <option>
-                    All Status
-                </option>
-
-                <option>
-                    Active
-                </option>
-
-                <option>
-                    Monitoring
-                </option>
-
-                <option>
-                    Resolved
-                </option>
-
-                </select>
-
-            </div>
-
-
-            <table>
-
-                <thead>
-
-                <tr>
-                    <th>Alert ID</th>
-                    <th>Order ID</th>
-                    <th>Alert Type</th>
-                    <th>Message</th>
-                    <th>Priority</th>
-                    <th>Detected At</th>
-                    <th>Status</th>
-                    <th>Action</th>
-                </tr>
-
-                </thead>
-
-
-                <tbody>
-
-                <tr>
-
-                    <td>ALT001</td>
-                    <td>ORD1072</td>
-                    <td>Stock Issue</td>
-
-                    <td>
-                    Product C stock is insufficient
-                    </td>
-
-                    <td>
-                    <span className="operator-status operator-red-status">
-                        Critical
-                    </span>
-                    </td>
-
-                    <td>
-                    25/09/2026
-                    <br />
-                    10:20 AM
-                    </td>
-
-                    <td>
-                    <span className="operator-status operator-red-status">
-                        Active
-                    </span>
-                    </td>
-
-                    <td>
-                    <button className="operator-action-btn">
-                        View
-                    </button>
-                    </td>
-
-                </tr>
-
-
-                <tr>
-
-                    <td>ALT002</td>
-                    <td>ORD1064</td>
-                    <td>QC Return</td>
-
-                    <td>
-                    Packaging issue requires correction
-                    </td>
-
-                    <td>
-                    <span className="operator-status operator-red-status">
-                        Critical
-                    </span>
-                    </td>
-
-                    <td>
-                    25/09/2026
-                    <br />
-                    09:50 AM
-                    </td>
-
-                    <td>
-                    <span className="operator-status operator-yellow-status">
-                        Monitoring
-                    </span>
-                    </td>
-
-                    <td>
-                    <button className="operator-action-btn">
-                        View
-                    </button>
-                    </td>
-
-                </tr>
-
-
-                <tr>
-
-                    <td>ALT003</td>
-                    <td>ORD1068</td>
-                    <td>Order Delay</td>
-
-                    <td>
-                    Order processing exceeded 2 hours
-                    </td>
-
-                    <td>
-                    <span className="operator-status operator-yellow-status">
-                        Warning
-                    </span>
-                    </td>
-
-                    <td>
-                    25/09/2026
-                    <br />
-                    09:30 AM
-                    </td>
-
-                    <td>
-                    <span className="operator-status operator-yellow-status">
-                        Monitoring
-                    </span>
-                    </td>
-
-                    <td>
-                    <button className="operator-action-btn">
-                        View
-                    </button>
-                    </td>
-
-                </tr>
-
-
-                <tr>
-
-                    <td>ALT004</td>
-                    <td>ORD1059</td>
-                    <td>Delivery Delay</td>
-
-                    <td>
-                    Expected delivery time has been exceeded
-                    </td>
-
-                    <td>
-                    <span className="operator-status operator-yellow-status">
-                        Warning
-                    </span>
-                    </td>
-
-                    <td>
-                    25/09/2026
-                    <br />
-                    08:45 AM
-                    </td>
-
-                    <td>
-                    <span className="operator-status operator-green-status">
-                        Resolved
-                    </span>
-                    </td>
-
-                    <td>
-                    <button
-                        className="operator-action-btn disabled-btn"
-                        disabled
-                    >
-                        Resolved
-                    </button>
-                    </td>
-
-                </tr>
-
-                </tbody>
-
-            </table>
-
-            </div>
-        </>
-        )}
-
+  
         {/* =========================
             REPORTS
         ========================== */}

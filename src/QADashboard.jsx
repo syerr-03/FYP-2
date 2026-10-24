@@ -6,22 +6,140 @@ import {
   onSnapshot,
   getDocs,
   addDoc,
+  updateDoc,
+  doc,
   serverTimestamp,
 } from "firebase/firestore";
 
 function QADashboard({ onLogout }) {
   const [activePage, setActivePage] = useState("analytics");
+  const [recurringSearch, setRecurringSearch] = useState("");
+  const [recurringSeverity, setRecurringSeverity] = useState("All");
   const [selectedIssue, setSelectedIssue] = useState(null);
   const [qaOrders, setQaOrders] = useState([]);
+  const [deliveryIssueHistory, setDeliveryIssueHistory] = useState([]);
+  const [qcInspectionResults, setQcInspectionResults] = useState([]);
   const [qaProducts, setQaProducts] = useState([]);
   const [topProductLimit, setTopProductLimit] = useState(3);
+  const [rankingLimit, setRankingLimit] = useState("3");
+  const [customRankingLimit, setCustomRankingLimit] = useState("");
+  const [analyticsPeriod, setAnalyticsPeriod] = useState("This Month");
+  const [analyticsProduct, setAnalyticsProduct] = useState("All Products");
+  const [customStartDate, setCustomStartDate] = useState("");
+  const [customEndDate, setCustomEndDate] = useState("");
+  const [showDatePopup, setShowDatePopup] = useState(false);
+  const [tempStartDate, setTempStartDate] = useState("");
+  const [tempEndDate, setTempEndDate] = useState("");
+  const [hoveredTrendIndex, setHoveredTrendIndex] = useState(null);
+  
+const openCustomDatePopup = () => {
+  setTempStartDate(customStartDate);
+  setTempEndDate(customEndDate);
+  setShowDatePopup(true);
+};
+
+const applyCustomDateRange = () => {
+  if (!tempStartDate || !tempEndDate) {
+    alert("Please select both start and end dates.");
+    return;
+  }
+
+  if (tempStartDate > tempEndDate) {
+    alert("Start date cannot be after end date.");
+    return;
+  }
+
+  setCustomStartDate(tempStartDate);
+  setCustomEndDate(tempEndDate);
+  setAnalyticsPeriod("Custom");
+  setShowDatePopup(false);
+};
+
+const cancelCustomDateRange = () => {
+  setShowDatePopup(false);
+};
+
+const isWithinAnalyticsPeriod = (dateValue) => {
+  if (!dateValue) return false;
+
+  const date = new Date(dateValue);
+  if (Number.isNaN(date.getTime())) return false;
+
+  const now = new Date();
+  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const end = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+
+  if (analyticsPeriod === "This Week") {
+    start.setDate(start.getDate() - 6);
+  } else if (analyticsPeriod === "This Month") {
+    start.setDate(1);
+  } else if (analyticsPeriod === "Last 3 Months") {
+    start.setMonth(now.getMonth() - 2, 1);
+  } else if (analyticsPeriod === "Last 6 Months") {
+    start.setMonth(now.getMonth() - 5, 1);
+  } else if (analyticsPeriod === "Custom") {
+    if (!customStartDate || !customEndDate) return false;
+
+    const customStart = new Date(`${customStartDate}T00:00:00`);
+    const customEnd = new Date(`${customEndDate}T23:59:59.999`);
+
+    return date >= customStart && date <= customEnd;
+  }
+
+  return date >= start && date <= end;
+};
+
+
   const [rootCause, setRootCause] = useState("");
   const [correctiveAction, setCorrectiveAction] = useState("");
   const [assignedTo, setAssignedTo] = useState("");
   const [targetDate, setTargetDate] = useState("");
   const [priority, setPriority] = useState("Medium");
-  const [actionStatus, setActionStatus] = useState("Open");
   const [correctiveActions, setCorrectiveActions] = useState([]);
+  const [remarks, setRemarks] = useState("");
+  const [editingActionId, setEditingActionId] = useState(null);
+
+
+useEffect(() => {
+  const unsubscribe = onSnapshot(
+    collection(db, "delivery_issues"),
+    (snapshot) => {
+      const issues = snapshot.docs.map((document) => ({
+        id: document.id,
+        ...document.data(),
+      }));
+
+      setDeliveryIssueHistory(issues);
+    },
+    (error) => {
+      console.error("Error loading delivery issues:", error);
+    }
+  );
+
+  return () => unsubscribe();
+}, []);
+
+
+  
+useEffect(() => {
+  const unsubscribe = onSnapshot(
+    collection(db, "qc_inspections"),
+    (snapshot) => {
+      const results = snapshot.docs.map((document) => ({
+        id: document.id,
+        ...document.data(),
+      }));
+
+      setQcInspectionResults(results);
+    },
+    (error) => {
+      console.error("Error loading QC inspection results:", error);
+    }
+  );
+
+  return () => unsubscribe();
+}, []);
+
 
     useEffect(() => {
     const unsubscribe = onSnapshot(
@@ -78,22 +196,45 @@ function QADashboard({ onLogout }) {
   return () => unsubscribe();
 }, []);
 
-    const qcIssueOrders = qaOrders.filter(
-        (order) =>
-            order.QC_Result === "Rejected" ||
-            order.QC_Reject_Note
-        );
+    const qcIssueOrders = qcInspectionResults.filter(
+      (inspection) =>
+        inspection.QC_Result === "Rejected" &&
+        isWithinAnalyticsPeriod(inspection.QC_Inspected_At) &&
+        (
+          analyticsProduct === "All Products" ||
+          (inspection.QC_Rejected_Products || []).some(
+            (product) =>
+              (product.Product_Name || product.productName) === analyticsProduct
+          ) ||
+          (
+            !(inspection.QC_Rejected_Products || []).length &&
+            (inspection.QC_Product_Inspections || []).some(
+              (product) =>
+                product.result === "Rejected" &&
+                (product.productName || product.Product_Name) === analyticsProduct
+            )
+          )
+        )
+    );
 
-        const deliveryIssueOrders = qaOrders.filter(
-        (order) =>
-            order.Delivery_Issue === true ||
-            [
-            "Delivery Delayed",
-            "Not Received",
-            "Returned",
-            "Canceled",
-            ].includes(order.Delivery_Status)
-        );
+        
+    const deliveryIssueOrders = deliveryIssueHistory
+      .filter(
+        (issue) =>
+          isWithinAnalyticsPeriod(issue.Delivery_Issue_At) &&
+          (
+            analyticsProduct === "All Products" ||
+            (issue.items || []).some(
+              (item) => item.Product_Name === analyticsProduct
+            )
+          )
+      )
+      .map((issue) => ({
+        ...issue,
+        Delivery_Status: issue.Delivery_Issue_Type,
+        Delivery_Updated_At: issue.Delivery_Issue_At,
+      }));
+
 
         const totalQualityIssues =
         qcIssueOrders.length + deliveryIssueOrders.length;
@@ -107,61 +248,115 @@ function QADashboard({ onLogout }) {
         )
         ).size;
 
-        const productIssueMap = {};
 
-qaOrders.forEach((order) => {
-  (order.items || []).forEach((item) => {
-    const productName = item.Product_Name || "Unknown Product";
+const productIssueMap = {};
 
-    if (!productIssueMap[productName]) {
-      productIssueMap[productName] = {
-        product: productName,
-        totalIssues: 0,
-        qcIssues: 0,
-        deliveryIssues: 0,
-        issueTypes: {},
-      };
+  const addProductIssue = (productName, source, issueType, dateValue) => {
+  const name = productName || "Unknown Product";
+  const rawIssue = String(issueType || "Unknown Issue").trim();
+  const issue = /^(expired|expiry issue|expired product|expiry date invalid)$/i.test(rawIssue)
+    ? "Expiry Issue"
+    : rawIssue;
+
+  if (!productIssueMap[name]) {
+    productIssueMap[name] = {
+      product: name,
+      totalIssues: 0,
+      qcIssues: 0,
+      deliveryIssues: 0,
+      issueTypes: {},
+      issueDates: {},
+    };
+  }
+
+  productIssueMap[name].totalIssues += 1;
+
+  if (source === "QC") {
+    productIssueMap[name].qcIssues += 1;
+  } else {
+    productIssueMap[name].deliveryIssues += 1;
+  }
+
+  productIssueMap[name].issueTypes[issue] =
+    (productIssueMap[name].issueTypes[issue] || 0) + 1;
+    const date = dateValue?.toDate?.() || new Date(dateValue || 0);
+
+    if (!isNaN(date.getTime()) && dateValue) {
+      const previous = productIssueMap[name].issueDates[issue];
+      if (!previous || date > previous) {
+        productIssueMap[name].issueDates[issue] = date;
+      }
     }
+};
 
-   
+// QC: Only count products actually rejected during inspection
+  qcIssueOrders.forEach((inspection) => {
+    const rejectedProducts = inspection.QC_Rejected_Products || [];
 
-    if (
-      order.QC_Result === "Rejected" ||
-      order.QC_Reject_Note
-    ) {
-      productIssueMap[productName].qcIssues += 1;
+    if (rejectedProducts.length > 0) {
+      rejectedProducts.forEach((product) => {
+        const reasons = product.Rejection_Reasons || [];
+        const productName = product.Product_Name || product.productName;
 
-      productIssueMap[productName].totalIssues += 1;
+        if (reasons.length > 0) {
+          reasons.forEach((reason) => {
+            addProductIssue(
+              productName, "QC", reason,
+              inspection.QC_Inspected_At || inspection.QC_Rejected_At
+            );
+          });
+        } else {
+          addProductIssue(
+            productName,
+            "QC",
+            inspection.QC_Reject_Note || "QC Inspection Issue"
+          );
+        }
+      });
+    } else {
+      // Support older QC records without QC_Rejected_Products
+      const failedProducts = (
+        inspection.QC_Product_Inspections || []
+      ).filter((product) => product.result === "Rejected");
 
-      const issueType =
-        order.QC_Reject_Note || "QC Inspection Issue";
+      failedProducts.forEach((product) => {
+        const reasons = product.rejectionReasons || [];
 
-      productIssueMap[productName].issueTypes[issueType] =
-        (productIssueMap[productName].issueTypes[issueType] || 0) + 1;
-    }
-
-    if (
-      order.Delivery_Issue === true ||
-      [
-        "Delivery Delayed",
-        "Not Received",
-        "Returned",
-        "Canceled",
-      ].includes(order.Delivery_Status)
-    ) {
-      productIssueMap[productName].deliveryIssues += 1;
-
-      productIssueMap[productName].totalIssues += 1;
-      const issueType =
-        order.Delivery_Issue_Type ||
-        order.Delivery_Status ||
-        "Delivery Issue";
-
-      productIssueMap[productName].issueTypes[issueType] =
-        (productIssueMap[productName].issueTypes[issueType] || 0) + 1;
+        if (reasons.length > 0) {
+          reasons.forEach((reason) => {
+            addProductIssue(
+              product.productName || product.Product_Name,
+              "QC",
+              reason
+            );
+          });
+        } else {
+          addProductIssue(
+            product.productName || product.Product_Name,
+            "QC",
+            inspection.QC_Reject_Note || "QC Inspection Issue"
+          );
+        }
+      });
     }
   });
+
+// Delivery: Count delivery problems from Operator
+
+deliveryIssueOrders.forEach((issue) => {
+  const issueType = issue.Delivery_Issue_Type;
+
+  (issue.items || []).forEach((item) => {
+    addProductIssue(
+      item.Product_Name,
+      "Delivery",
+      issueType,
+      issue.Delivery_Issue_At
+    );
+  });
 });
+
+
 
 const problematicProducts = Object.values(productIssueMap)
   .map((product) => {
@@ -206,88 +401,200 @@ const allProductIssueRanking = allProductNames
   .sort((a, b) => b.totalIssues - a.totalIssues);
 
 
-const monthlyIssueMap = {};
 
-const addMonthlyIssue = (dateValue) => {
-  if (!dateValue || dateValue === "-") return;
+const today = new Date();
+today.setHours(0, 0, 0, 0);
 
-  const date = new Date(dateValue);
+const toLocalDate = (date) => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+};
 
-  if (isNaN(date)) return;
+const getIssueDate = (value) => {
+  if (!value) return null;
 
-  const key = `${date.getFullYear()}-${date.getMonth()}`;
+  const date = value?.toDate
+    ? value.toDate()
+    : new Date(value);
 
-  if (!monthlyIssueMap[key]) {
-    monthlyIssueMap[key] = {
-      year: date.getFullYear(),
-      month: date.getMonth(),
+  return Number.isNaN(date.getTime()) ? null : date;
+};
+
+const monthlyMode = [
+  "Last 3 Months",
+  "Last 6 Months",
+].includes(analyticsPeriod);
+
+const trendStart = new Date(today);
+const trendEnd = new Date(today);
+
+if (analyticsPeriod === "This Week") {
+  trendStart.setDate(today.getDate() - 6);
+} else if (analyticsPeriod === "This Month") {
+  trendStart.setDate(1);
+} else if (analyticsPeriod === "Last 3 Months") {
+  trendStart.setMonth(today.getMonth() - 2, 1);
+} else if (analyticsPeriod === "Last 6 Months") {
+  trendStart.setMonth(today.getMonth() - 5, 1);
+} else if (analyticsPeriod === "Custom") {
+  if (customStartDate && customEndDate) {
+    const start = new Date(`${customStartDate}T00:00:00`);
+    const end = new Date(`${customEndDate}T00:00:00`);
+
+    if (!Number.isNaN(start.getTime()) &&
+        !Number.isNaN(end.getTime()) &&
+        start <= end) {
+      trendStart.setTime(start.getTime());
+      trendEnd.setTime(end.getTime());
+    }
+  }
+}
+
+const trendDifferenceDays = Math.round(
+  (trendEnd - trendStart) / 86400000
+);
+
+const useMonthlyTrend =
+  monthlyMode || trendDifferenceDays > 62;
+
+const trendMap = {};
+
+const makeTrendKey = (date) =>
+  useMonthlyTrend
+    ? `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`
+    : toLocalDate(date);
+
+const cursor = new Date(trendStart);
+cursor.setHours(0, 0, 0, 0);
+
+while (cursor <= trendEnd) {
+  const key = makeTrendKey(cursor);
+
+  if (!trendMap[key]) {
+    trendMap[key] = {
+      key,
+      date: new Date(cursor),
       total: 0,
+      qc: 0,
+      delivery: 0,
     };
   }
 
-  monthlyIssueMap[key].total += 1;
+  if (useMonthlyTrend) {
+    cursor.setMonth(cursor.getMonth() + 1, 1);
+  } else {
+    cursor.setDate(cursor.getDate() + 1);
+  }
+}
+
+const addTrendIssue = (dateValue, source) => {
+  const date = getIssueDate(dateValue);
+  if (!date) return;
+
+  const key = makeTrendKey(date);
+  const entry = trendMap[key];
+
+  if (!entry) return;
+
+  entry.total += 1;
+
+  if (source === "QC") {
+    entry.qc += 1;
+  } else {
+    entry.delivery += 1;
+  }
 };
 
-
-qcIssueOrders.forEach((order) => {
-  addMonthlyIssue(
-    order.QC_Rejected_At ||
-    order.QC_Completed_At
+qcIssueOrders.forEach((inspection) => {
+  addTrendIssue(
+    inspection.QC_Inspected_At || inspection.QC_Rejected_At,
+    "QC"
   );
 });
 
-
-deliveryIssueOrders.forEach((order) => {
-  addMonthlyIssue(
-    order.Delivery_Issue_At ||
-    order.Delivery_Updated_At
+deliveryIssueOrders.forEach((issue) => {
+  addTrendIssue(
+    issue.Delivery_Issue_At || issue.Delivery_Updated_At,
+    "Delivery"
   );
 });
 
-
-const monthlyQualityTrend = Object.values(monthlyIssueMap)
-  .sort((a, b) => {
-    const dateA = new Date(a.year, a.month);
-    const dateB = new Date(b.year, b.month);
-
-    return dateA - dateB;
-  })
-  .slice(-6)
-  .map((item) => ({
-    ...item,
-
-    label: new Date(
-      item.year,
-      item.month
-    ).toLocaleString("en-US", {
-      month: "short",
-    }),
-  }));
-
-
-const maxMonthlyIssues = Math.max(
-  ...monthlyQualityTrend.map((item) => item.total),
-  1
+const qualityTrendData = Object.values(trendMap).sort(
+  (a, b) => a.date - b.date
 );
 
-const passedInspections = qaOrders.filter(
-  (order) =>
-    order.QC_Result === "Passed" ||
-    order.QC_Result === "Passed (After Recheck)"
+const maximumTrendValue = Math.max(
+  1,
+  ...qualityTrendData.flatMap((item) => [item.qc, item.delivery])
+);
+
+const maxVisibleDateLabels = 7;
+
+const shouldShowTrendLabel = (index) => {
+  const total = qualityTrendData.length;
+
+  if (total <= maxVisibleDateLabels) return true;
+
+  const positions = new Set(
+    Array.from({ length: maxVisibleDateLabels }, (_, i) =>
+      Math.round(
+        (i * (total - 1)) / (maxVisibleDateLabels - 1)
+      )
+    )
+  );
+
+  return positions.has(index);
+};
+
+const trendDateLabel = (date) =>
+  date.toLocaleDateString("en-GB", {
+    day: useMonthlyTrend ? undefined : "numeric",
+    month: "short",
+  });
+
+const trendFullDate = (date) =>
+  date.toLocaleDateString("en-GB", {
+    day: useMonthlyTrend ? undefined : "numeric",
+    month: "long",
+    year: "numeric",
+  });
+
+const filteredQCInspections = qcInspectionResults.filter(
+  (inspection) =>
+    isWithinAnalyticsPeriod(inspection.QC_Inspected_At) &&
+    (
+      analyticsProduct === "All Products" ||
+      (inspection.items || []).some(
+        (item) => item.Product_Name === analyticsProduct
+      ) ||
+      (inspection.QC_Product_Inspections || []).some(
+        (product) =>
+          (product.productName || product.Product_Name) === analyticsProduct
+      )
+    )
+);
+
+const passedInspections = filteredQCInspections.filter(
+  (inspection) =>
+    [
+      "Passed",
+      "Passed (After Recheck)",
+      "Passed (After Reject)",
+    ].includes(inspection.QC_Result)
 ).length;
 
-const rejectedInspections = qaOrders.filter(
-  (order) => order.QC_Result === "Rejected"
+const rejectedInspections = filteredQCInspections.filter(
+  (inspection) => inspection.QC_Result === "Rejected"
 ).length;
 
-const recheckInspections = qaOrders.filter(
-  (order) => order.QC_Status === "Recheck"
+const recheckInspections = filteredQCInspections.filter(
+  (inspection) => inspection.QC_Result === "Recheck"
 ).length;
 
 const totalInspections =
-  passedInspections +
-  rejectedInspections +
-  recheckInspections;
+  passedInspections + rejectedInspections + recheckInspections;
 
 const passedRate =
   totalInspections > 0
@@ -304,96 +611,178 @@ const recheckRate =
     ? (recheckInspections / totalInspections) * 100
     : 0;
 
+
 const productPerformanceMap = {};
 
-qaOrders.forEach((order) => {
-  (order.items || []).forEach((item) => {
-    const productName =
-      item.Product_Name || "Unknown Product";
+const getProductPerformance = (name) => {
+  const productName = name || "Unknown Product";
 
-    if (!productPerformanceMap[productName]) {
-      productPerformanceMap[productName] = {
-        product: productName,
-        inspected: 0,
-        passed: 0,
-        rejected: 0,
-        recheck: 0,
-        issues: 0,
-      };
-    }
+  if (!productPerformanceMap[productName]) {
+    productPerformanceMap[productName] = {
+      product: productName,
+      inspected: 0,
+      passed: 0,
+      rejected: 0,
+      issues: 0,
+    };
+  }
 
-    const hasInspection =
-      order.QC_Status ||
-      order.QC_Result ||
-      order.QC_Checklist ||
-      order.QC_Final_Checklist;
+  return productPerformanceMap[productName];
+};
 
-    if (hasInspection) {
-      productPerformanceMap[productName].inspected += 1;
-    }
+const passedQCResults = [
+  "Passed",
+  "Passed (After Recheck)",
+  "Passed (After Reject)",
+];
 
-    if (
-      order.QC_Result === "Passed" ||
-      order.QC_Result === "Passed (After Recheck)"
-    ) {
-      productPerformanceMap[productName].passed += 1;
-    }
+filteredQCInspections.forEach((inspection) => {
+  const result = inspection.QC_Result;
 
-    if (order.QC_Result === "Rejected") {
-      productPerformanceMap[productName].rejected += 1;
-    }
+  const productInspections =
+    inspection.QC_Product_Inspections || [];
 
-    if (order.QC_Status === "Recheck") {
-      productPerformanceMap[productName].recheck += 1;
-    }
+  const rejectedProducts =
+    inspection.QC_Rejected_Products || [];
 
-    if (
-      order.QC_Result === "Rejected" ||
-      order.QC_Reject_Note ||
-      order.Delivery_Issue === true ||
-      [
-        "Delivery Delayed",
-        "Not Received",
-        "Returned",
-        "Canceled",
-      ].includes(order.Delivery_Status)
-    ) {
-      productPerformanceMap[productName].issues += 1;
-    }
-  });
+  const orderItems = inspection.items || [];
+
+  // Only count completed product inspections here.
+  if (
+    result !== "Rejected" &&
+    !passedQCResults.includes(result)
+  ) {
+    return;
+  }
+
+  // Use individual QC product results when available.
+  if (productInspections.length > 0) {
+    productInspections.forEach((item) => {
+      const name =
+        item.productName || item.Product_Name;
+
+      if (
+        analyticsProduct !== "All Products" &&
+        name !== analyticsProduct
+      ) {
+        return;
+      }
+
+      const product = getProductPerformance(name);
+      const itemResult = item.result || item.Result;
+
+      if (itemResult === "Rejected") {
+        product.inspected += 1;
+        product.rejected += 1;
+      } else if (itemResult === "Passed") {
+        product.inspected += 1;
+        product.passed += 1;
+      }
+    });
+
+    return;
+  }
+
+  // Fallback for completed passed orders.
+  if (passedQCResults.includes(result)) {
+    orderItems.forEach((item) => {
+      const name =
+        item.Product_Name || item.productName;
+
+      if (
+        analyticsProduct !== "All Products" &&
+        name !== analyticsProduct
+      ) {
+        return;
+      }
+
+      const product = getProductPerformance(name);
+      product.inspected += 1;
+      product.passed += 1;
+    });
+
+    return;
+  }
+
+  // Fallback for rejected products when individual
+  // inspection results are not available.
+  if (result === "Rejected") {
+    rejectedProducts.forEach((item) => {
+      const name =
+        item.Product_Name || item.productName;
+
+      if (
+        analyticsProduct !== "All Products" &&
+        name !== analyticsProduct
+      ) {
+        return;
+      }
+
+      const product = getProductPerformance(name);
+      product.inspected += 1;
+      product.rejected += 1;
+    });
+  }
 });
 
-const productQualityPerformance =
-  Object.values(productPerformanceMap)
-    .map((product) => ({
-      ...product,
-      passRate:
-        product.inspected > 0
-          ? (product.passed / product.inspected) * 100
-          : 0,
-    }))
-    .sort((a, b) => b.issues - a.issues);
+// Attach QC and Delivery issue counts.
+Object.values(productIssueMap).forEach((issue) => {
+  if (
+    analyticsProduct !== "All Products" &&
+    issue.product !== analyticsProduct
+  ) {
+    return;
+  }
 
-    const recurringIssues = Object.values(productIssueMap)
-  .flatMap((product) =>
-    Object.entries(product.issueTypes)
-      .filter(([, count]) => count >= 2)
-      .map(([issue, count]) => ({
-        product: product.product,
-        issue: issue,
-        cases: count,
+  const product = getProductPerformance(issue.product);
+  product.issues = issue.totalIssues;
+});
 
-        severity:
-          count >= 5
-            ? "High"
-            : count >= 3
-            ? "Medium"
-            : "Low",
+const productQualityPerformance = Object.values(
+  productPerformanceMap
+)
+  .map((product) => ({
+    ...product,
+    passRate:
+      product.inspected > 0
+        ? (product.passed / product.inspected) * 100
+        : 0,
+  }))
+  .sort(
+    (a, b) =>
+      b.inspected - a.inspected ||
+      b.issues - a.issues
+  );
+
+const recurringIssues = Object.values(productIssueMap)
+  .flatMap((p) =>
+    Object.entries(p.issueTypes)
+      .filter(([, count]) => count >= 1)
+      .map(([issue, cases]) => ({
+        date: p.issueDates[issue] || null,
+        product: p.product,
+        issue,
+        cases,
+        trend: "Recurring",
+        severity: cases >= 5 ? "High" : cases >= 3 ? "Medium" : "Low",
+        status: "Investigation Required",
       }))
   )
-  .sort((a, b) => b.cases - a.cases);
+  .sort((a, b) => (b.date?.getTime() || 0) - (a.date?.getTime() || 0));
 
-  const totalRecurringIssues = recurringIssues.length;
+const filteredRecurringIssues = recurringIssues.filter((item, index) => {
+  const search = recurringSearch.toLowerCase();
+  const id = `RI${String(index + 1).padStart(3, "0")}`;
+
+  return (
+    [id, item.product, item.issue].some((v) =>
+      v.toLowerCase().includes(search)
+    ) &&
+    (recurringSeverity === "All" || item.severity === recurringSeverity)
+  );
+});  
+
+const totalRecurringIssues = recurringIssues.length;
 
 const highSeverityRecurring = recurringIssues.filter(
   (item) => item.severity === "High"
@@ -407,6 +796,28 @@ const lowSeverityRecurring = recurringIssues.filter(
   (item) => item.severity === "Low"
 ).length;
 
+const handleViewAction = (action) => {
+  setEditingActionId(action.id);
+  setSelectedIssue(action);
+  setRootCause(action.rootCause || "");
+  setCorrectiveAction(action.correctiveAction || "");
+  setAssignedTo(action.assignedTo || "");
+  setTargetDate(action.completionDate || action.targetDate || "");
+  setPriority(action.priority || "Medium");
+  setRemarks(action.remarks || "");
+};
+
+const closeActionForm = () => {
+  setSelectedIssue(null);
+  setEditingActionId(null);
+  setRootCause("");
+  setCorrectiveAction("");
+  setAssignedTo("");
+  setTargetDate("");
+  setPriority("Medium");
+  setRemarks("");
+};
+
 const handleSaveCorrectiveAction = async () => {
   if (
     !selectedIssue ||
@@ -419,41 +830,42 @@ const handleSaveCorrectiveAction = async () => {
     return;
   }
 
-  try {
+  
+try {
+  const data = {
+    rootCause: rootCause.trim(),
+    correctiveAction: correctiveAction.trim(),
+    assignedTo,
+    completionDate: targetDate,
+    priority,
+    remarks: remarks.trim(),
+  };
+
+  if (editingActionId) {
+    await updateDoc(doc(db, "corrective_actions", editingActionId), {
+      ...data,
+      updatedAt: serverTimestamp(),
+    });
+  } else {
     await addDoc(collection(db, "corrective_actions"), {
+      ...data,
       issueId: selectedIssue.issueId,
       product: selectedIssue.product,
       issue: selectedIssue.issue,
       cases: selectedIssue.cases,
       trend: selectedIssue.trend,
       severity: selectedIssue.severity,
-
-      rootCause: rootCause.trim(),
-      correctiveAction: correctiveAction.trim(),
-      assignedTo,
-      targetDate,
-      priority,
-      status: actionStatus,
-      remarks: remarks.trim(),
-
       createdAt: serverTimestamp(),
     });
-
-    alert("Corrective action saved successfully.");
-
-    setRootCause("");
-    setCorrectiveAction("");
-    setAssignedTo("");
-    setTargetDate("");
-    setPriority("Medium");
-    setActionStatus("Open");
-    setRemarks("");
-    setSelectedIssue(null);
-
-  } catch (error) {
-    console.error("Error saving corrective action:", error);
-    alert("Failed to save corrective action.");
   }
+
+  alert(editingActionId ? "Changes saved successfully." : "Corrective action saved successfully.");
+  closeActionForm();
+} catch (error) {
+  console.error("Error saving corrective action:", error);
+  alert("Failed to save corrective action.");
+}
+
 };
 
 const openCorrectiveActions = correctiveActions.filter(
@@ -495,7 +907,7 @@ const completedCorrectiveActions = correctiveActions.filter(
               className={activePage === "recurring" ? "qa-active" : ""}
               onClick={() => setActivePage("recurring")}
             >
-              Recurring Issues
+              Quality Issues
             </a>
 
             <a
@@ -590,6 +1002,14 @@ const completedCorrectiveActions = correctiveActions.filter(
                     </span>
                 </div>
 
+                <div className="qa-card">
+                  <p>Total Rejected</p>
+                  <h2>{rejectedInspections}</h2>
+
+                  <span className="qa-red">
+                    Rejected QC inspections
+                  </span>
+                </div>
 
                 <div className="qa-card">
                     <p>Products Affected</p>
@@ -941,31 +1361,107 @@ const completedCorrectiveActions = correctiveActions.filter(
 
             </div>
 
+            
+            
             <div className="qa-analytics-filters">
 
-                <select>
-                <option>This Month</option>
-                <option>This Week</option>
-                <option>Last Month</option>
-                <option>Last 3 Months</option>
+              <div className="qa-date-filter-wrapper">
+
+                <select
+                  value={showDatePopup ? "Custom" : analyticsPeriod}
+                  onChange={(e) => {
+                    const selectedPeriod = e.target.value;
+                    if (selectedPeriod === "Custom") {
+                      openCustomDatePopup();
+                    }else {
+                      setAnalyticsPeriod(selectedPeriod);
+                      setShowDatePopup(false);
+                    }
+                  }}
+                  onClick={() => {
+                    if (analyticsPeriod === "Custom" && !showDatePopup) {
+                      openCustomDatePopup();
+                    }
+                  }}
+                >
+                  <option value="This Week">This Week</option>
+                  <option value="This Month">This Month</option>
+                  <option value="Last 3 Months">Last 3 Months</option>
+                  <option value="Last 6 Months">Last 6 Months</option>
+                  <option value="Custom">Custom Date Range</option>
                 </select>
 
-                <select>
-                <option>All Products</option>
-                <option>Product AA</option>
-                <option>Serum A</option>
-                <option>Cleanser B</option>
-                <option>Toner E</option>
-                </select>
+                {showDatePopup && (
+                  <div className="qa-date-popup">
+
+                    <h4>Select Date Range</h4>
+
+                    <div className="qa-date-popup-field">
+                      <label>From</label>
+                      <input
+                        type="date"
+                        value={tempStartDate}
+                        max={tempEndDate || undefined}
+                        onChange={(e) => setTempStartDate(e.target.value)}
+                      />
+                    </div>
+
+                    <div className="qa-date-popup-field">
+                      <label>To</label>
+                      <input
+                        type="date"
+                        value={tempEndDate}
+                        min={tempStartDate || undefined}
+                        onChange={(e) => setTempEndDate(e.target.value)}
+                      />
+                    </div>
+
+                    <div className="qa-date-popup-actions">
+                      <button
+                        type="button"
+                        className="qa-date-cancel-btn"
+                        onClick={cancelCustomDateRange}
+                      >
+                        Cancel
+                      </button>
+
+                      <button
+                        type="button"
+                        className="qa-date-apply-btn"
+                        onClick={applyCustomDateRange}
+                      >
+                        Apply
+                      </button>
+                    </div>
+
+                  </div>
+                )}
+
+              </div>
+
+              <select
+                value={analyticsProduct}
+                onChange={(e) => setAnalyticsProduct(e.target.value)}
+              >
+                <option value="All Products">All Products</option>
+
+                {allProductNames.map((product) => (
+                  <option key={product} value={product}>
+                    {product}
+                  </option>
+                ))}
+              </select>
 
             </div>
+
+
 
             </div>
 
 
             {/* SUMMARY */}
 
-            <div className="qa-summary-grid">
+            <div className="qa-summary-grid qa-summary-five">
 
             <div className="qa-card">
                 <p>Total Quality Issues</p>
@@ -981,6 +1477,14 @@ const completedCorrectiveActions = correctiveActions.filter(
                 <span className="qa-pink">
                 Inspection related
                 </span>
+            </div>
+
+            <div className="qa-card">
+              <p>Total Rejected</p>
+              <h2>{rejectedInspections}</h2>
+              <span className="qa-red">
+                Rejected QC inspections
+              </span>
             </div>
 
             <div className="qa-card">
@@ -1001,452 +1505,306 @@ const completedCorrectiveActions = correctiveActions.filter(
 
             </div>
 
-
-            <div className="qa-panel">
-
-            <div className="qa-section-header">
-                <div>
-                <h3>Quality Issues</h3>
-                <p className="qa-section-subtitle">
-                    Combined quality issues from QC inspection and delivery
-                </p>
-                </div>
-            </div>
-
-            <table>
-                <thead>
-                <tr>
-                    <th>Order ID</th>
-                    <th>Product</th>
-                    <th>Source</th>
-                    <th>Issue</th>
-                    <th>Date</th>
-                </tr>
-                </thead>
-
-                <tbody>
-                {[
-                    ...qcIssueOrders.map((order) => ({
-                    ...order,
-                    issueSource: "QC",
-                    issueText:
-                        order.QC_Reject_Note ||
-                        "QC Inspection Issue",
-                    issueDate:
-                        order.QC_Rejected_At ||
-                        order.QC_Completed_At ||
-                        "-",
-                    })),
-
-                    ...deliveryIssueOrders.map((order) => ({
-                    ...order,
-                    issueSource: "Delivery",
-                    issueText:
-                        order.Delivery_Issue_Type ||
-                        order.Delivery_Status ||
-                        "Delivery Issue",
-                    issueDate:
-                        order.Delivery_Issue_At ||
-                        order.Delivery_Updated_At ||
-                        "-",
-                    })),
-                ]
-                    .sort(
-                    (a, b) =>
-                        new Date(b.issueDate || 0) -
-                        new Date(a.issueDate || 0)
-                    )
-                    .map((order) => (
-                    <tr key={`${order.Order_ID}-${order.issueSource}`}>
-                        <td>{order.Order_ID}</td>
-
-                        <td>
-                        {(order.items || [])
-                            .map((item) => item.Product_Name)
-                            .join(", ") || "-"}
-                        </td>
-
-                        <td>
-                        <span
-                            className={`qa-status ${
-                            order.issueSource === "QC"
-                                ? "qa-pink-status"
-                                : "qa-yellow-status"
-                            }`}
-                        >
-                            {order.issueSource}
-                        </span>
-                        </td>
-
-                        <td>{order.issueText}</td>
-
-                        <td>
-                        {order.issueDate !== "-"
-                            ? new Date(order.issueDate).toLocaleString()
-                            : "-"}
-                        </td>
-                    </tr>
-                    ))}
-                </tbody>
-            </table>
-
-            </div>
-
-
-            {/* QUALITY TREND + OUTCOME */}
+            {/* QUALITY TREND + TOP PROBLEMATIC PRODUCTS */}
 
             <div className="qa-dashboard-grid">
 
+            
             <div className="qa-panel">
+              <h3>Quality Issues Trend</h3>
 
-                <h3>Monthly Quality Trend</h3>
+              <p className="qa-section-subtitle">
+                QC and delivery issues based on the selected period
+              </p>
 
-                <p className="qa-section-subtitle">
-                Number of quality issues detected over the last six months
-                </p>
+              <div style={{ display: "flex", gap: "20px", margin: "12px 0" }}>
+                <span style={{ color: "#e52d87", fontWeight: 600 }}>
+                  ● QC Issues
+                </span>
+                <span style={{ color: "#f59e0b", fontWeight: 600 }}>
+                  ● Delivery Issues
+                </span>
+              </div>
 
-                <div className="qa-analytics-chart">
+              {qualityTrendData.length > 0 ? (
+                <div className="qa-line-chart-container">
+                  {(() => {
+                    const width = 700;
+                    const height = 260;
+                    const left = 38;
+                    const right = 22;
+                    const top = 25;
+                    const bottom = 48;
 
-                    {monthlyQualityTrend.length > 0 ? (
-                        monthlyQualityTrend.map((item) => (
-                        <div
-                            className="qa-analytics-bar-item"
-                            key={`${item.year}-${item.month}`}
+                    const chartWidth = width - left - right;
+                    const chartHeight = height - top - bottom;
+
+                    const getX = (index) =>
+                      qualityTrendData.length === 1
+                        ? left + chartWidth / 2
+                        : left +
+                          (index / (qualityTrendData.length - 1)) *
+                            chartWidth;
+
+                    const getY = (value) =>
+                      top +
+                      chartHeight -
+                      (value / maximumTrendValue) * chartHeight;
+
+                    const points = qualityTrendData.map((item, index) => ({
+                      ...item,
+                      x: getX(index),
+                      y: getY(item.total),
+                    }));
+
+                    const makeLinePath = (type) =>
+                      points
+                        .map((point, index) =>
+                          `${index === 0 ? "M" : "L"} ${point.x} ${getY(point[type])}`
+                        )
+                        .join(" ");
+
+                    const activePoint =
+                      hoveredTrendIndex !== null
+                        ? points[hoveredTrendIndex]
+                        : null;
+
+                    return (
+                      <>
+                        
+                    {activePoint && (
+                      <div
+                        className="qa-line-tooltip"
+                        style={{
+                          left: `${Math.max(14, Math.min(86, (activePoint.x / width) * 100))}%`,
+                          top: `${(activePoint.y / height) * 100}%`,
+                        }}
+                      >
+                        <strong>
+                          {trendFullDate(activePoint.date)}
+                        </strong>
+
+                        <span>
+                          Total Issues: {activePoint.total}
+                        </span>
+
+                        <span>
+                          QC Issues: {activePoint.qc}
+                        </span>
+
+                        <span>
+                          Delivery Issues: {activePoint.delivery}
+                        </span>
+                      </div>
+                    )}
+
+                        <svg
+                          className="qa-line-chart"
+                          viewBox={`0 0 ${width} ${height}`}
+                          role="img"
+                          aria-label="Quality issues trend line graph"
+                          onMouseLeave={() =>
+                            setHoveredTrendIndex(null)
+                          }
                         >
+                          {Array.from({ length: 5 }, (_, index) => {
+                            const value =
+                              (maximumTrendValue / 4) * index;
 
-                            <div
-                            className="qa-analytics-bar"
-                            style={{
-                                height: `${Math.max(
-                                (item.total / maxMonthlyIssues) * 100,
-                                8
-                                )}%`,
-                            }}
-                            title={`${item.label}: ${item.total} issues`}
-                            ></div>
+                            return (
+                              <g key={index}>
+                                <line
+                                  x1={left}
+                                  x2={width - right}
+                                  y1={getY(value)}
+                                  y2={getY(value)}
+                                  stroke="#e9e9e9"
+                                  strokeDasharray="4 4"
+                                />
 
-                            <strong>{item.total}</strong>
+                                <text
+                                  x={left - 8}
+                                  y={getY(value) + 4}
+                                  textAnchor="end"
+                                  fontSize="12"
+                                  fill="#777"
+                                >
+                                  {Number.isInteger(value)
+                                    ? value
+                                    : value.toFixed(1)}
+                                </text>
+                              </g>
+                            );
+                          })}
 
-                            <span>{item.label}</span>
+                          
+                          <path
+                            d={makeLinePath("qc")}
+                            fill="none"
+                            stroke="#e52d87"
+                            strokeWidth="3"
+                            strokeLinecap="round"
+                          />
 
-                        </div>
-                        ))
-                    ) : (
-                        <p className="qa-section-subtitle">
-                        No quality issue data available.
-                        </p>
-                    )}
+                          <path
+                            d={makeLinePath("delivery")}
+                            fill="none"
+                            stroke="#f59e0b"
+                            strokeWidth="3"
+                            strokeLinecap="round"
+                          />
 
-                    </div>
 
+                          {points.map((point, index) => (
+                            <g key={point.key}>
+                              {hoveredTrendIndex === index && (
+                                <line
+                                  x1={point.x}
+                                  x2={point.x}
+                                  y1={top}
+                                  y2={height - bottom}
+                                  stroke="#e52d87"
+                                  strokeDasharray="4 4"
+                                  opacity="0.6"
+                                />
+                              )}
+
+                              
+                              {["qc", "delivery"].map((type) => (
+                                <circle
+                                  key={type}
+                                  cx={point.x}
+                                  cy={getY(point[type])}
+                                  r={hoveredTrendIndex === index ? 6 : 3}
+                                  fill={type === "qc" ? "#e52d87" : "#f59e0b"}
+                                  stroke="#ffffff"
+                                  strokeWidth="2"
+                                />
+                              ))}
+
+
+                              {shouldShowTrendLabel(index) && (
+                                <text
+                                  x={point.x}
+                                  y={height - 14}
+                                  textAnchor="middle"
+                                  fontSize="11"
+                                  fill="#777"
+                                >
+                                  {trendDateLabel(point.date)}
+                                </text>
+                              )}
+                            </g>
+                          ))}
+
+                          {points.map((point, index) => {
+                            const space =
+                              points.length > 1
+                                ? chartWidth / (points.length - 1)
+                                : chartWidth;
+
+                            return (
+                              <rect
+                                key={`hover-${point.key}`}
+                                x={point.x - space / 2}
+                                y={top}
+                                width={space}
+                                height={chartHeight}
+                                fill="transparent"
+                                onMouseEnter={() =>
+                                  setHoveredTrendIndex(index)
+                                }
+                                onClick={() =>
+                                  setHoveredTrendIndex(index)
+                                }
+                              />
+                            );
+                          })}
+                        </svg>
+                      </>
+                    );
+                  })()}
+                </div>
+              ) : (
+                <p>No quality issues data available for this period.</p>
+              )}
             </div>
 
-
-            <div className="qa-panel">
-
-                <h3>Inspection Outcome</h3>
-
-                <p className="qa-section-subtitle">
-                Distribution of completed inspection results
-                </p>
-
-                <div className="qa-outcome-list">
-
-                <div className="qa-outcome-item">
-
-                    <div className="qa-outcome-header">
-                    <span>Passed</span>
-                    <strong>{passedInspections}</strong>
-                    </div>
-
-                    <div className="qa-outcome-progress">
-                    <div
-                        className="qa-outcome-fill qa-outcome-green"
-                        style={{ width: `${passedRate}%` }}
-                    ></div>
-                    </div>
-
-                </div>
-
-
-                <div className="qa-outcome-item">
-
-                    <div className="qa-outcome-header">
-                    <span>Rejected</span>
-                    <strong>{rejectedInspections}</strong>
-                    </div>
-
-                    <div className="qa-outcome-progress">
-                    <div
-                        className="qa-outcome-fill qa-outcome-red"
-                        style={{ width: `${rejectedRate}%` }}
-                    ></div>
-                    </div>
-
-                </div>
-
-
-                <div className="qa-outcome-item">
-
-                    <div className="qa-outcome-header">
-                    <span>Recheck</span>
-                    <strong>{recheckInspections}</strong>
-                    </div>
-
-                    <div className="qa-outcome-progress">
-                    <div
-                        className="qa-outcome-fill qa-outcome-yellow"
-                        style={{ width: `${recheckRate}%` }}
-                    ></div>
-                    </div>
-
-                </div>
-
-                </div>
-
-            </div>
-
-            </div>
-
-
-            {/* PRODUCT QUALITY PERFORMANCE */}
-
-            <div className="qa-panel">
-
-            <div className="qa-section-header">
-
-                <div>
-                <h3>Product Quality Performance</h3>
-
-                <p className="qa-section-subtitle">
-                    Compare quality inspection performance across products
-                </p>
-                </div>
-
-            </div>
-
-            <table>
-
-                <thead>
-                <tr>
-                    <th>Product</th>
-                    <th>Total Inspected</th>
-                    <th>Passed</th>
-                    <th>Rejected</th>
-                    <th>Recheck</th>
-                    <th>Issues</th>
-                    <th>Pass Rate</th>
-                </tr>
-                </thead>
-
-                <tbody>
-                    {productQualityPerformance.length > 0 ? (
-                        productQualityPerformance.map((product) => (
-                        <tr key={product.product}>
-                            <td>{product.product}</td>
-
-                            <td>{product.inspected}</td>
-
-                            <td>{product.passed}</td>
-
-                            <td>{product.rejected}</td>
-
-                            <td>{product.recheck}</td>
-
-                            <td>
-                            <span
-                                className={`qa-status ${
-                                product.issues >= 5
-                                    ? "qa-red-status"
-                                    : product.issues >= 2
-                                    ? "qa-yellow-status"
-                                    : "qa-blue-status"
-                                }`}
-                            >
-                                {product.issues}
-                            </span>
-                            </td>
-
-                            <td>{product.passRate.toFixed(1)}%</td>
-                        </tr>
-                        ))
-                    ) : (
-                        <tr>
-                        <td colSpan="7">
-                            No product quality data available.
-                        </td>
-                        </tr>
-                    )}
-                    </tbody>
-
-            </table>
-
-            </div>
-
+            
 
             {/* TOP PROBLEMATIC PRODUCTS */}
-
             <div className="qa-panel">
 
-  <div className="qa-section-header">
+              <div className="qa-section-header">
+                <div>
+                  <h3>Top Problematic Products</h3>
 
-    <div>
-      <h3>Top Problematic Products</h3>
+                  <p className="qa-section-subtitle">
+                    Products with the highest number of QC and delivery issues
+                  </p>
+                </div>
 
-      <p className="qa-section-subtitle">
-        Products with the highest number of QC and delivery issues
-      </p>
-    </div>
+                <select
+                  value={topProductLimit}
+                  onChange={(e) =>
+                    setTopProductLimit(Number(e.target.value))
+                  }
+                >
+                  <option value={3}>Top 3</option>
+                  <option value={5}>Top 5</option>
+                  <option value={10}>Top 10</option>
+                </select>
+              </div>
 
-    <select
-      value={topProductLimit}
-      onChange={(e) =>
-        setTopProductLimit(Number(e.target.value))
-      }
-    >
-      <option value={3}>Top 3</option>
-      <option value={5}>Top 5</option>
-      <option value={10}>Top 10</option>
-    </select>
+              <div className="qa-problem-ranking">
+                {topProblematicProducts.length > 0 ? (
+                  topProblematicProducts.map((product, index) => (
+                    <div
+                      className="qa-problem-ranking-item"
+                      key={product.product}
+                    >
+                      <div className="qa-problem-rank">
+                        {index + 1}
+                      </div>
 
-  </div>
+                      <div className="qa-problem-product-detail">
+                        <strong>{product.product}</strong>
 
+                        <span>
+                          Main issue: {product.mainIssue}
+                        </span>
 
-  <div className="qa-problem-ranking">
+                        <small>
+                          QC: {product.qcIssues}
+                          {" | "}
+                          Delivery: {product.deliveryIssues}
+                        </small>
+                      </div>
 
-    {topProblematicProducts.length > 0 ? (
-
-      topProblematicProducts.map((product, index) => (
-
-        <div
-          className="qa-problem-ranking-item"
-          key={product.product}
-        >
-
-          <div className="qa-problem-rank">
-            {index + 1}
-          </div>
-
-          <div className="qa-problem-product-detail">
-
-            <strong>
-              {product.product}
-            </strong>
-
-            <span>
-              Main issue: {product.mainIssue}
-            </span>
-
-            <small>
-              QC: {product.qcIssues}
-              {" | "}
-              Delivery: {product.deliveryIssues}
-            </small>
-
-          </div>
-
-          <span
-            className={`qa-status ${
-              index === 0
-                ? "qa-red-status"
-                : index <= 2
-                ? "qa-yellow-status"
-                : "qa-blue-status"
-            }`}
-          >
-            {product.totalIssues} Issues
-          </span>
-
-        </div>
-
-      ))
-
-    ) : (
-
-      <p className="qa-section-subtitle">
-        No problematic products detected.
-      </p>
-
-    )}
-
-  </div>
-
-</div>
-
-{/* ALL PRODUCT ISSUE RANKING */}
-
-<div className="qa-panel">
-
-  <div className="qa-section-header">
-    <div>
-      <h3>All Product Issue Ranking</h3>
-
-      <p className="qa-section-subtitle">
-        Ranking of all products from highest to lowest number of quality issues
-      </p>
-    </div>
-  </div>
-
-  <div className="qa-product-ranking-chart">
-
-    {allProductIssueRanking.map((product, index) => {
-
-      const maxIssues =
-        allProductIssueRanking[0]?.totalIssues || 1;
-
-      const qcWidth =
-        (product.qcIssues / maxIssues) * 100;
-
-      const deliveryWidth =
-        (product.deliveryIssues / maxIssues) * 100;
-
-
-      return (
-        <div
-          className="qa-product-ranking-row"
-          key={product.product}
-        >
-
-          <div className="qa-product-ranking-label">
-            <span className="qa-product-ranking-number">
-              {index + 1}
-            </span>
-
-            <span className="qa-product-ranking-name">
-              {product.product}
-            </span>
-          </div>
-
-          <div className="qa-product-ranking-bar-area">
-
-            <div className="qa-product-ranking-track">
-
-              <div
-                className="qa-product-ranking-qc"
-                style={{ width: `${qcWidth}%` }}
-              ></div>
-
-              <div
-                className="qa-product-ranking-delivery"
-                style={{ width: `${deliveryWidth}%` }}
-              ></div>
+                      <span
+                        className={`qa-status ${
+                          index === 0
+                            ? "qa-red-status"
+                            : index <= 2
+                            ? "qa-yellow-status"
+                            : "qa-blue-status"
+                        }`}
+                      >
+                        {product.totalIssues} Issues
+                      </span>
+                    </div>
+                  ))
+                ) : (
+                  <p className="qa-section-subtitle">
+                    No problematic products detected.
+                  </p>
+                )}
+              
+              </div>
 
             </div>
 
-            <div className="qa-product-ranking-count">
-              {product.totalIssues}
             </div>
-
-          </div>
-
-        </div>
-      );
-    })}
-
-  </div>
-
-</div>
-
         </>
         )}
 
@@ -1843,9 +2201,9 @@ const completedCorrectiveActions = correctiveActions.filter(
             <div className="qa-topbar">
 
             <div>
-                <h1>Recurring Issues</h1>
+                <h1>Quality Issues</h1>
                 <p>
-                Review repeated quality problems that require investigation
+                Monitor quality issues detected during QC inspections and deliveries
                 </p>
             </div>
 
@@ -1870,11 +2228,11 @@ const completedCorrectiveActions = correctiveActions.filter(
             <div className="qa-summary-grid">
 
             <div className="qa-card">
-                <p>Recurring Issues</p>
+                <p>Total Quality Issues</p>
                 <h2>{totalRecurringIssues}</h2>
 
                 <span className="qa-red">
-                Repeated quality issues
+                 QC and delivery issues
                 </span>
             </div>
 
@@ -1918,10 +2276,10 @@ const completedCorrectiveActions = correctiveActions.filter(
             <div className="qa-section-header">
 
                 <div>
-                <h3>Recurring Quality Issues</h3>
+                <h3>Quality Issues Records</h3>
 
                 <p className="qa-section-subtitle">
-                    Issues that have repeatedly occurred and may require corrective action
+                    Review reported QC rejection and delivery issues
                 </p>
                 </div>
 
@@ -1932,13 +2290,18 @@ const completedCorrectiveActions = correctiveActions.filter(
                 <input
                 type="text"
                 placeholder="Search Issue ID, Product or Issue..."
+                value={recurringSearch}
+                onChange={(e) => setRecurringSearch(e.target.value)}
                 />
 
-                <select>
-                <option>All Severity Levels</option>
-                <option>High</option>
-                <option>Medium</option>
-                <option>Low</option>
+                <select
+                  value={recurringSeverity}
+                  onChange={(e) => setRecurringSeverity(e.target.value)}
+                >
+                <option value="All">All Severity Levels</option>
+                <option value="High">High</option>
+                <option value="Medium">Medium</option>
+                <option value="Low">Low</option>
                 </select>
 
                 <select>
@@ -1955,6 +2318,7 @@ const completedCorrectiveActions = correctiveActions.filter(
 
                 <thead>
                 <tr>
+                    <th>Date</th>
                     <th>Issue ID</th>
                     <th>Product</th>
                     <th>Issue</th>
@@ -1967,9 +2331,14 @@ const completedCorrectiveActions = correctiveActions.filter(
                 </thead>
 
                 <tbody>
-                    {recurringIssues.length > 0 ? (
-                        recurringIssues.map((item, index) => (
+                    {filteredRecurringIssues.length > 0 ? (
+                      filteredRecurringIssues.map((item, index) => (
                         <tr key={`${item.product}-${item.issue}`}>
+                          <td>
+                            {item.date
+                              ? item.date.toLocaleDateString("en-GB")
+                              : "-"}
+                          </td>
 
                             <td>
                             {`RI${String(index + 1).padStart(3, "0")}`}
@@ -2031,7 +2400,7 @@ const completedCorrectiveActions = correctiveActions.filter(
                         ))
                     ) : (
                         <tr>
-                        <td colSpan="8">
+                        <td colSpan="9">
                             No recurring quality issues detected.
                         </td>
                         </tr>
@@ -2076,48 +2445,17 @@ const completedCorrectiveActions = correctiveActions.filter(
 
             </div>
 
-            <div className="qa-summary-grid">
-
+           
+              <div className="qa-summary-grid">
                 <div className="qa-card">
-                    <p>Total Actions</p>
-                    <h2>{correctiveActions.length}</h2>
-
-                    <span className="qa-pink">
-                    All corrective actions
-                    </span>
+                  <p>Total Corrective Actions</p>
+                  <h2>{correctiveActions.length}</h2>
+                  <span className="qa-pink">
+                    Recorded corrective actions
+                  </span>
                 </div>
+              </div>
 
-
-                <div className="qa-card">
-                    <p>Open</p>
-                    <h2>{openCorrectiveActions}</h2>
-
-                    <span className="qa-red">
-                    Require action
-                    </span>
-                </div>
-
-
-                <div className="qa-card">
-                    <p>In Progress</p>
-                    <h2>{inProgressCorrectiveActions}</h2>
-
-                    <span className="qa-yellow">
-                    Currently being handled
-                    </span>
-                </div>
-
-
-                <div className="qa-card">
-                    <p>Completed</p>
-                    <h2>{completedCorrectiveActions}</h2>
-
-                    <span className="qa-green">
-                    Action completed
-                    </span>
-                </div>
-
-                </div>
 
 
             {selectedIssue ? (
@@ -2137,10 +2475,14 @@ const completedCorrectiveActions = correctiveActions.filter(
                     </div>
 
                     <button
-                    className="qa-back-btn"
-                    onClick={() => setActivePage("recurring")}
+                      className="qa-back-btn"
+                      onClick={() => {
+                        const wasEditing = Boolean(editingActionId);
+                        closeActionForm();
+                        setActivePage(wasEditing ? "corrective" : "recurring");
+                      }}
                     >
-                    Back to Recurring Issues
+                      {editingActionId ? "Back to Records" : "Back to Quality Issues"}
                     </button>
 
                 </div>
@@ -2185,15 +2527,19 @@ const completedCorrectiveActions = correctiveActions.filter(
 
                 {/* INVESTIGATION FORM */}
 
-                <div className="qa-panel">
+                <div className="qa-panel qa-corrective-document">
 
                 <div className="qa-section-header">
 
                     <div>
-                    <h3>Corrective Action Investigation</h3>
+                    <h3>
+                      {editingActionId
+                        ? "Corrective Action Record"
+                        : "Record Completed Corrective Action"}
+                    </h3>
 
                     <p className="qa-section-subtitle">
-                        Document the root cause and action required to prevent recurrence
+                        Record the root cause and corrective action taken after the issue has been resolved.
                     </p>
                     </div>
 
@@ -2241,7 +2587,7 @@ const completedCorrectiveActions = correctiveActions.filter(
 
 
                     <div className="qa-form-group">
-                    <label>Target Date</label>
+                    <label>Completion Date</label>
 
                     <input
                         type="date"
@@ -2265,20 +2611,6 @@ const completedCorrectiveActions = correctiveActions.filter(
                     </div>
 
 
-                    <div className="qa-form-group">
-                    <label>Status</label>
-
-                    <select
-                        value={actionStatus}
-                        onChange={(e) => setActionStatus(e.target.value)}
-                        >
-                        <option value="Open">Open</option>
-                        <option value="In Progress">In Progress</option>
-                        <option value="Completed">Completed</option>
-                        </select>
-                    </div>
-
-
                     <div className="qa-form-group qa-form-full">
                     <label>Remarks</label>
 
@@ -2295,17 +2627,21 @@ const completedCorrectiveActions = correctiveActions.filter(
                 <div className="qa-corrective-buttons">
 
                     <button
-                    className="qa-cancel-btn"
-                    onClick={() => setActivePage("recurring")}
+                      className="qa-cancel-btn"
+                      onClick={() => {
+                        const wasEditing = Boolean(editingActionId);
+                        closeActionForm();
+                        setActivePage(wasEditing ? "corrective" : "recurring");
+                      }}
                     >
-                    Cancel
+                      Cancel
                     </button>
 
                     <button
                         className="qa-save-btn"
                         onClick={handleSaveCorrectiveAction}
                         >
-                        Save Corrective Action
+                        {editingActionId ? "Save Changes" : "Save Corrective Action"}
                         </button>
 
                 </div>
@@ -2336,54 +2672,48 @@ const completedCorrectiveActions = correctiveActions.filter(
 
                 <table>
 
-                    <thead>
+                    
+                  <thead>
                     <tr>
-                        <th>Action ID</th>
-                        <th>Related Issue</th>
-                        <th>Product</th>
-                        <th>Corrective Action</th>
-                        <th>Assigned To</th>
-                        <th>Status</th>
+                      <th>Action ID</th>
+                      <th>Related Issue</th>
+                      <th>Product</th>
+                      <th>Corrective Action</th>
+                      <th>Assigned To</th>
+                      <th>Priority</th>
+                      <th>Completion Date</th>
+                      <th>Action</th>
                     </tr>
-                    </thead>
+                  </thead>
 
-                   <tbody>
+                  <tbody>
                     {correctiveActions.length > 0 ? (
-                        correctiveActions.map((action, index) => (
+                      correctiveActions.map((action, index) => (
                         <tr key={action.id}>
-                            <td>{`CA${String(index + 1).padStart(3, "0")}`}</td>
-
-                            <td>{action.issueId || "-"}</td>
-
-                            <td>{action.product || "-"}</td>
-
-                            <td>{action.correctiveAction || "-"}</td>
-
-                            <td>{action.assignedTo || "-"}</td>
-
-                            <td>
-                            <span
-                                className={`qa-status ${
-                                action.status === "Completed"
-                                    ? "qa-green-status"
-                                    : action.status === "In Progress"
-                                    ? "qa-yellow-status"
-                                    : "qa-red-status"
-                                }`}
+                          <td>{`CA${String(index + 1).padStart(3, "0")}`}</td>
+                          <td>{action.issueId || "-"}</td>
+                          <td>{action.product || "-"}</td>
+                          <td>{action.correctiveAction || "-"}</td>
+                          <td>{action.assignedTo || "-"}</td>
+                          <td>{action.priority || "-"}</td>
+                          <td>{action.completionDate || action.targetDate || "-"}</td>
+                          <td>
+                            <button
+                              className="qa-action-btn"
+                              onClick={() => handleViewAction(action)}
                             >
-                                {action.status || "Open"}
-                            </span>
-                            </td>
+                              View
+                            </button>
+                          </td>
                         </tr>
-                        ))
+                      ))
                     ) : (
-                        <tr>
-                        <td colSpan="6">
-                            No corrective actions recorded.
-                        </td>
-                        </tr>
+                      <tr>
+                        <td colSpan="8">No corrective actions recorded.</td>
+                      </tr>
                     )}
-                    </tbody>
+                  </tbody>
+
 
                 </table>
 
@@ -2715,7 +3045,6 @@ const completedCorrectiveActions = correctiveActions.filter(
                     <th>Total Inspected</th>
                     <th>Passed</th>
                     <th>Rejected</th>
-                    <th>Recheck</th>
                     <th>Defects</th>
                     <th>Recurring Issues</th>
                     <th>Risk Level</th>

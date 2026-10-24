@@ -1,8 +1,95 @@
 import { useEffect, useState } from "react";
+import { db } from "./firebase";
+import {
+  collection,
+  onSnapshot,
+  doc,
+  setDoc,
+} from "firebase/firestore";
 import "./AdminDashboard.css";
 
 function AdminDashboard({ onLogout }) {
   const [activePage, setActivePage] = useState("dashboard");
+  // ORDER MANAGEMENT SEARCH & FILTER
+  const [orderSearch, setOrderSearch] = useState("");
+  const [orderStatusFilter, setOrderStatusFilter] = useState("All");
+  const [orderRiskFilter, setOrderRiskFilter] = useState("All");
+  const [orderDateFilter, setOrderDateFilter] = useState("All");
+
+  const [customStartDate, setCustomStartDate] = useState("");
+  const [customEndDate, setCustomEndDate] = useState("");
+  const [showCustomDatePopup, setShowCustomDatePopup] = useState(true);
+  const [orders, setOrders] = useState([]);
+  const [inventoryData, setInventoryData] = useState([]);
+  const [inventorySearch, setInventorySearch] = useState("");
+  const [inventoryStatusFilter, setInventoryStatusFilter] = useState("All");
+  const [customerSegmentation, setCustomerSegmentation] = useState([]);
+  const [customerSegmentCounts, setCustomerSegmentCounts] = useState({});
+  const [customerSearch, setCustomerSearch] = useState("");
+  const [customerSegmentFilter, setCustomerSegmentFilter] = useState("All");
+  const [anomalyData, setAnomalyData] = useState([]);
+  const [anomalyLoading, setAnomalyLoading] = useState(false);
+  const [anomalyError, setAnomalyError] = useState("");
+  const [anomalyReviewStatuses, setAnomalyReviewStatuses] = useState({});
+  const [selectedAnomaly, setSelectedAnomaly] = useState(null);
+  const [anomalySaving, setAnomalySaving] = useState(false);
+  const [anomalyTotalTransactions, setAnomalyTotalTransactions] = useState(0);
+
+  useEffect(() => {
+    const unsubscribe = onSnapshot(
+      collection(db, "inventory"),
+      (snapshot) => {
+        const products = snapshot.docs.map((doc) => ({
+          id: doc.id,
+          ...doc.data(),
+        }));
+
+        setInventoryData(
+          products.sort((a, b) =>
+            String(a.Product_Name || "").localeCompare(
+              String(b.Product_Name || "")
+            )
+          )
+        );
+      },
+      (error) => {
+        console.error("Error fetching admin inventory:", error);
+      }
+    );
+
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    const unsubscribe = onSnapshot(
+      collection(db, "orders"),
+      (snapshot) => {
+        const orderList = snapshot.docs.map((doc) => ({
+          id: doc.id,
+          ...doc.data(),
+        }));
+
+        const sortedOrders = orderList.sort((a, b) => {
+          const dateA = new Date(
+            `${a.Order_Date || ""} ${a.Order_Time || "00:00"}`
+          );
+
+          const dateB = new Date(
+            `${b.Order_Date || ""} ${b.Order_Time || "00:00"}`
+          );
+
+          return (dateB.getTime() || 0) - (dateA.getTime() || 0);
+        });
+
+        setOrders(sortedOrders);
+      },
+      (error) => {
+        console.error("Error fetching admin orders:", error);
+      }
+    );
+
+    return () => unsubscribe();
+  }, []);
   const [forecastData, setForecastData] = useState([]);
   const [forecastLoading, setForecastLoading] = useState(true);
   const [forecastMonths, setForecastMonths] = useState(3);
@@ -80,37 +167,303 @@ function AdminDashboard({ onLogout }) {
 
     const highestDemandProduct = forecastSummary[0];
     
-    const monthlyForecast = forecastData.reduce((acc, item) => {
-      const month = item.Month;
-      const qty = Number(item.Predicted_Quantity) || 0;
+    const monthlyForecast = Object.values(
+        forecastData.reduce((acc, item) => {
+          const date = item.Date;
+          if (!date) return acc;
 
-      if (!acc[month]) {
-        acc[month] = 0;
-      }
+          if (!acc[date]) {
+            acc[date] = {
+              date,
+              quantity: 0,
+            };
+          }
 
-      acc[month] += qty;
+          acc[date].quantity += Number(item.Predicted_Quantity) || 0;
 
-      return acc;
-    }, {});
+          return acc;
+        }, {})
+      ).sort((a, b) => a.date.localeCompare(b.date));
 
-    const months = [
-      "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-      "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
-    ];
+      const maxMonthlyDemand = Math.max(
+        ...monthlyForecast.map((item) => item.quantity),
+        1
+      );
 
-    const maxMonthlyDemand = Math.max(
-      ...months.map((month) => monthlyForecast[month] || 0),
-      1
-    );
-
-    const topProducts = forecastSummary.slice(0, 10);
+    const topProducts = forecastSummary;
 
     const highestMonthlyProduct =
-      highestDemandProduct?.Product_Code || "-";
+  highestDemandProduct?.Product_Code || "-";
+
+// OPERATIONAL RISK - DATA FROM FIREBASE
+const operationalRisks = orders.flatMap((order) => {
+  const risks = [];
+
+  if (order.Delivery_Status === "Canceled") {
+    risks.push({
+      Order_ID: order.Order_ID,
+      Customer_Name: order.Customer_Name || "-",
+      Risk_Type: "Order Cancellation",
+      Risk_Level: "High",
+      Date_Detected: order.Delivery_Updated_At || "",
+      Status: "Active",
+    });
+  }
+
+  if (order.Delivery_Status === "Delivery Delayed") {
+    risks.push({
+      Order_ID: order.Order_ID,
+      Customer_Name: order.Customer_Name || "-",
+      Risk_Type: "Delivery Delay",
+      Risk_Level: "Medium",
+      Date_Detected: order.Delivery_Updated_At || "",
+      Status: "Active",
+    });
+  }
+
+  if (order.Order_Status === "Hold") {
+    risks.push({
+      Order_ID: order.Order_ID,
+      Customer_Name: order.Customer_Name || "-",
+      Risk_Type: "Stock Shortage",
+      Risk_Level: "High",
+      Date_Detected: order.Processed_At || "",
+      Status: "Active",
+    });
+  }
+
+  if (order.Delivery_Status === "Returned") {
+    risks.push({
+      Order_ID: order.Order_ID,
+      Customer_Name: order.Customer_Name || "-",
+      Risk_Type: "Returns",
+      Risk_Level: "Medium",
+      Date_Detected: order.Delivery_Updated_At || "",
+      Status: "Active",
+    });
+  }
+
+  return risks;
+});
+
+// CUSTOMER ANALYTICS - GROUP CUSTOMER ORDERS
+const customerMap = new Map();
+
+orders.forEach((order) => {
+  const customerName = String(order.Customer_Name || "").trim();
+  const phone = String(order.Phone_Number || "").trim();
+
+  if (!customerName) return;
+
+  const customerKey = phone || customerName.toLowerCase();
+
+  if (!customerMap.has(customerKey)) {
+    customerMap.set(customerKey, {
+      Customer_ID: customerKey,
+      Customer_Name: customerName,
+      Total_Orders: 0,
+      Cancelled_Orders: 0,
+      Returned_Orders: 0,
+      Last_Order: "",
+    });
+  }
+
+  const customer = customerMap.get(customerKey);
+
+  customer.Total_Orders += 1;
+
+  if (
+    ["Canceled", "Cancelled"].includes(order.Delivery_Status) ||
+    ["Canceled", "Cancelled"].includes(order.Order_Status)
+  ) {
+    customer.Cancelled_Orders += 1;
+  }
+
+  if (order.Delivery_Status === "Returned") {
+    customer.Returned_Orders += 1;
+  }
+
+  const orderDate = String(order.Order_Date || "");
+
+  if (orderDate > customer.Last_Order) {
+    customer.Last_Order = orderDate;
+  }
+});
+
+const customerData = Array.from(customerMap.values());
+
+const filteredInventory = inventoryData.filter((item) => {
+  const keyword = inventorySearch.trim().toLowerCase();
+
+  const matchesSearch =
+    String(item.Product_Code || "").toLowerCase().includes(keyword) ||
+    String(item.Product_Name || "").toLowerCase().includes(keyword);
+
+  const available = Number(item.Available_Stock || 0);
+  const safety = Number(item.Safety_Stock || 0);
+  const reorder = Number(item.Reorder_Level || 0);
+
+  let status = "In Stock";
+
+  if (available <= 0) {
+    status = "Out of Stock";
+  } else if (available <= safety) {
+    status = "Critical";
+  } else if (available <= reorder) {
+    status = "Low Stock";
+  }
 
   return (
-    <div className="admin-layout">
+    matchesSearch &&
+    (inventoryStatusFilter === "All" ||
+      inventoryStatusFilter === status)
+  );
+});
 
+useEffect(() => {
+  const fetchCustomerSegmentation = async () => {
+    try {
+      const response = await fetch(
+        "http://127.0.0.1:5000/customer-segmentation"
+      );
+
+      if (!response.ok) {
+        throw new Error("Failed to fetch customer segmentation");
+      }
+
+      const result = await response.json();
+
+      setCustomerSegmentation(result.data || []);
+      setCustomerSegmentCounts(result.segment_counts || {});
+    } catch (error) {
+      console.error("Customer Segmentation API Error:", error);
+    }
+  };
+
+  fetchCustomerSegmentation();
+}, []);
+
+const filteredCustomerSegmentation = customerSegmentation.filter((customer) => {
+  const keyword = customerSearch.toLowerCase().trim();
+
+  const matchSearch = String(customer.Customer_ID || "")
+    .toLowerCase()
+    .includes(keyword);
+
+  const matchSegment =
+    customerSegmentFilter === "All" ||
+    customer.Customer_Segment === customerSegmentFilter;
+
+  return matchSearch && matchSegment;
+});
+
+useEffect(() => {
+  const fetchAnomalies = async () => {
+    setAnomalyLoading(true);
+    setAnomalyError("");
+
+    try {
+      const response = await fetch(
+        "http://127.0.0.1:5000/anomaly-detection"
+      );
+
+      if (!response.ok) {
+        throw new Error("Failed to fetch anomaly detection results");
+      }
+
+      const result = await response.json();
+
+      setAnomalyData(result.data || []);
+      setAnomalyTotalTransactions(result.total_transactions || 0);
+    } catch (error) {
+      console.error("Anomaly Detection API Error:", error);
+      setAnomalyError(error.message);
+    } finally {
+      setAnomalyLoading(false);
+    }
+  };
+
+  fetchAnomalies();
+}, []);
+
+useEffect(() => {
+  const unsubscribe = onSnapshot(
+    collection(db, "anomaly_reviews"),
+    (snapshot) => {
+      const statuses = {};
+
+      snapshot.forEach((document) => {
+        statuses[document.id] = document.data().Status || "Detected";
+      });
+
+      setAnomalyReviewStatuses(statuses);
+    },
+    (error) => {
+      console.error("Anomaly Reviews Firebase Error:", error);
+    }
+  );
+
+  return () => unsubscribe();
+}, []);
+
+const anomalyCategoryCounts = {
+  returned: anomalyData.filter(
+    (item) => item.Returned_Flag === "Yes"
+  ).length,
+
+  cancelled: anomalyData.filter(
+    (item) => item.Cancelled_Flag === "Yes"
+  ).length,
+
+  delayed: anomalyData.filter(
+    (item) => item.Delayed_Flag === "Yes"
+  ).length,
+
+  other: anomalyData.filter(
+    (item) =>
+      item.Returned_Flag !== "Yes" &&
+      item.Cancelled_Flag !== "Yes" &&
+      item.Delayed_Flag !== "Yes"
+  ).length,
+};
+
+const updateAnomalyStatus = async (anomaly, newStatus) => {
+  const anomalyId = String(anomaly.Order_ID || "").trim();
+
+  if (!anomalyId || anomalySaving) return;
+
+  try {
+    setAnomalySaving(true);
+
+    await setDoc(
+      doc(db, "anomaly_reviews", anomalyId),
+      {
+        Order_ID: anomalyId,
+        Status: newStatus,
+        Updated_At: new Date().toISOString(),
+      },
+      { merge: true }
+    );
+  } catch (error) {
+    console.error("Failed to update anomaly status:", error);
+    alert("Failed to update anomaly status.");
+  } finally {
+    setAnomalySaving(false);
+  }
+};
+
+const anomalyUnderReviewCount = anomalyData.filter(
+  (anomaly) =>
+    anomalyReviewStatuses[String(anomaly.Order_ID)] === "Under Review"
+).length;
+
+const anomalyResolvedCount = anomalyData.filter(
+  (anomaly) =>
+    anomalyReviewStatuses[String(anomaly.Order_ID)] === "Resolved"
+).length;
+
+return (
+  <div className="admin-layout">
       <aside className="sidebar">
         <div>
           <h2 className="brand">OrderAI</h2>
@@ -433,11 +786,6 @@ function AdminDashboard({ onLogout }) {
                     delivery and risk level
                   </p>
                 </div>
-
-                <button className="add-order-btn">
-                  + Add Order
-                </button>
-
               </div>
 
 
@@ -445,25 +793,80 @@ function AdminDashboard({ onLogout }) {
 
                 <input
                   type="text"
-                  placeholder="Search Order ID or Customer..."
+                  placeholder="Search Order ID, Customer or Product..."
+                  value={orderSearch}
+                  onChange={(e) => setOrderSearch(e.target.value)}
                 />
 
-                <select>
-                  <option>All Status</option>
-                  <option>New Order</option>
-                  <option>Processing</option>
-                  <option>Waiting QC</option>
-                  <option>Ready for Delivery</option>
-                  <option>Delivered</option>
-                  <option>Cancelled</option>
+                <select
+                  value={orderStatusFilter}
+                  onChange={(e) => setOrderStatusFilter(e.target.value)}
+                >
+                  <option value="All">All Status</option>
+                  <option value="New Order">New Order</option>
+                  <option value="Processing">Processing</option>
+                  <option value="Preparing">Preparing</option>
+                  <option value="Prepared">Prepared</option>
+                  <option value="Waiting QC">Waiting QC</option>
+                  <option value="Hold">Waiting Stock</option>
+                  <option value="Rejected by QC">Rejected by QC</option>
+                  <option value="QC Approved">QC Approved</option>
+                  <option value="Ready for Delivery">Ready for Delivery</option>
+                  <option value="Delivered">Delivered</option>
+                  <option value="Canceled">Canceled</option>
                 </select>
 
-                <select>
-                  <option>All Risk</option>
-                  <option>Low Risk</option>
-                  <option>Medium Risk</option>
-                  <option>High Risk</option>
+                <select
+                  value={orderRiskFilter}
+                  onChange={(e) => setOrderRiskFilter(e.target.value)}
+                >
+                  <option value="All">All Risk</option>
+                  <option value="Low">Low Risk</option>
+                  <option value="Medium">Medium Risk</option>
+                  <option value="High">High Risk</option>
                 </select>
+
+                <select
+                  value={orderDateFilter}
+                  onChange={(e) => {
+                    setOrderDateFilter(e.target.value);
+                    setShowCustomDatePopup(true);
+                  }}
+                >
+                  <option value="All">All Dates</option>
+                  <option value="1week">Last 1 Week</option>
+                  <option value="1month">Last 1 Month</option>
+                  <option value="3months">Last 3 Months</option>
+                  <option value="6months">Last 6 Months</option>
+                  <option value="Custom">Custom Date</option>
+                </select>
+
+                {orderDateFilter === "Custom" && showCustomDatePopup && (
+                  <div className="custom-date-popup">
+                    <label>Start Date</label>
+                    <input
+                      type="date"
+                      value={customStartDate}
+                      onChange={(e) => setCustomStartDate(e.target.value)}
+                    />
+
+                    <label>End Date</label>
+                    <input
+                      type="date"
+                      value={customEndDate}
+                      onChange={(e) => setCustomEndDate(e.target.value)}
+                    />
+
+                  <button
+                    type="button"
+                    className="custom-date-done"
+                    onClick={() => setShowCustomDatePopup(false)}
+                  >
+                    Done
+                  </button>
+
+                  </div>
+                )}
 
               </div>
 
@@ -489,176 +892,120 @@ function AdminDashboard({ onLogout }) {
 
 
                   <tbody>
+                    {orders.length === 0 ? (
+                      <tr>
+                        <td colSpan={10} style={{ textAlign: "center" }}>
+                          No orders found.
+                        </td>
+                      </tr>
+                    ) : (
+                      orders
+                  .filter((order) => {
+                    const keyword = orderSearch.trim().toLowerCase();
 
-                    <tr>
-                      <td>ORD1058</td>
-                      <td>Aina</td>
-                      <td>Serum A</td>
-                      <td>2</td>
-                      <td>25/09/2026</td>
-                      <td>08:15 AM</td>
+                    const matchesStatus =
+                      orderStatusFilter === "All" ||
+                      order.Order_Status === orderStatusFilter ||
+                      (orderStatusFilter === "Delivered" &&
+                        order.Delivery_Status === "Delivered") ||
+                      (orderStatusFilter === "Canceled" &&
+                        order.Delivery_Status === "Canceled");
 
-                      <td>
-                        <span className="status yellow">
-                          Processing
-                        </span>
-                      </td>
+                    const matchesRisk =
+                      orderRiskFilter === "All" ||
+                      String(order.Risk_Level || "")
+                        .toLowerCase() === orderRiskFilter.toLowerCase();
 
-                      <td>
-                        <span className="status yellow">
-                          Preparing
-                        </span>
-                      </td>
+                    // DATE FILTER
+                    const orderDate = new Date(`${order.Order_Date}T00:00:00`);
+                    const today = new Date();
+                    today.setHours(0, 0, 0, 0);
 
-                      <td>
-                        <span className="status green">
-                          Low
-                        </span>
-                      </td>
+                    let matchesDate = true;
 
-                      <td>
-                        <button className="table-action-btn">
-                          View
-                        </button>
-                      </td>
-                    </tr>
+                    if (orderDateFilter !== "All") {
+                      if (Number.isNaN(orderDate.getTime())) {
+                        matchesDate = false;
+                      } else if (orderDateFilter === "Custom") {
+                        const startDate = customStartDate
+                          ? new Date(`${customStartDate}T00:00:00`)
+                          : null;
 
+                        const endDate = customEndDate
+                          ? new Date(`${customEndDate}T00:00:00`)
+                          : null;
 
-                    <tr>
-                      <td>ORD1059</td>
-                      <td>Farah</td>
-                      <td>Cleanser B</td>
-                      <td>1</td>
-                      <td>25/09/2026</td>
-                      <td>08:42 AM</td>
+                        matchesDate =
+                          (!startDate || orderDate >= startDate) &&
+                          (!endDate || orderDate <= endDate);
 
-                      <td>
-                        <span className="status green">
-                          Completed
-                        </span>
-                      </td>
+                      } else {
+                        const startDate = new Date(today);
 
-                      <td>
-                        <span className="status green">
-                          Delivered
-                        </span>
-                      </td>
+                        if (orderDateFilter === "1week") {
+                          startDate.setDate(startDate.getDate() - 7);
+                        } else if (orderDateFilter === "1month") {
+                          startDate.setMonth(startDate.getMonth() - 1);
+                        } else if (orderDateFilter === "3months") {
+                          startDate.setMonth(startDate.getMonth() - 3);
+                        } else if (orderDateFilter === "6months") {
+                          startDate.setMonth(startDate.getMonth() - 6);
+                        }
 
-                      <td>
-                        <span className="status green">
-                          Low
-                        </span>
-                      </td>
+                        matchesDate = orderDate >= startDate && orderDate <= today;
+                      }
+                    }
 
-                      <td>
-                        <button className="table-action-btn">
-                          View
-                        </button>
-                      </td>
-                    </tr>
+                    const productNames = (order.items || [])
+                      .map((item) =>
+                        `${item.Product_Name || ""} ${item.Product_Code || ""}`
+                      )
+                      .join(" ")
+                      .toLowerCase();
 
-
-                    <tr>
-                      <td>ORD1060</td>
-                      <td>Amir</td>
-                      <td>Product C</td>
-                      <td>4</td>
-                      <td>25/09/2026</td>
-                      <td>09:05 AM</td>
-
-                      <td>
-                        <span className="status yellow">
-                          Waiting QC
-                        </span>
-                      </td>
-
-                      <td>
-                        <span className="status yellow">
-                          Pending
-                        </span>
-                      </td>
-
-                      <td>
-                        <span className="status yellow">
-                          Medium
-                        </span>
-                      </td>
-
-                      <td>
-                        <button className="table-action-btn">
-                          View
-                        </button>
-                      </td>
-                    </tr>
-
-
-                    <tr>
-                      <td>ORD1061</td>
-                      <td>Sofia</td>
-                      <td>Product D</td>
-                      <td>5</td>
-                      <td>25/09/2026</td>
-                      <td>09:18 AM</td>
-
-                      <td>
-                        <span className="status red">
-                          Cancelled
-                        </span>
-                      </td>
-
-                      <td>
-                        <span className="status red">
-                          Not Shipped
-                        </span>
-                      </td>
-
-                      <td>
-                        <span className="status red">
-                          High
-                        </span>
-                      </td>
-
-                      <td>
-                        <button className="table-action-btn">
-                          View
-                        </button>
-                      </td>
-                    </tr>
-
-
-                    <tr>
-                      <td>ORD1062</td>
-                      <td>Hana</td>
-                      <td>Serum A</td>
-                      <td>3</td>
-                      <td>25/09/2026</td>
-                      <td>09:32 AM</td>
-
-                      <td>
-                        <span className="status yellow">
-                          Waiting QC
-                        </span>
-                      </td>
-
-                      <td>
-                        <span className="status yellow">
-                          Pending
-                        </span>
-                      </td>
-
-                      <td>
-                        <span className="status green">
-                          Low
-                        </span>
-                      </td>
-
-                      <td>
-                        <button className="table-action-btn">
-                          View
-                        </button>
-                      </td>
-                    </tr>
-
+                    return (
+                      (
+                        String(order.Order_ID || order.id || "").toLowerCase().includes(keyword) ||
+                        String(order.Customer_Name || "").toLowerCase().includes(keyword) ||
+                        productNames.includes(keyword)
+                      ) &&
+                      matchesStatus &&
+                      matchesRisk &&
+                      matchesDate
+                      );
+                  })
+                  .map((order) => (
+                        <tr key={order.id}>
+                          <td>{order.Order_ID || order.id}</td>
+                          <td>{order.Customer_Name || "-"}</td>
+                          <td>
+                            {(order.items || [])
+                              .map((item) => item.Product_Name || item.Product_Code)
+                              .join(", ") || "-"}
+                          </td>
+                          <td>
+                            {(order.items || []).reduce(
+                              (total, item) => total + Number(item.Quantity || 0),
+                              0
+                            )}
+                          </td>
+                          <td>{order.Order_Date || "-"}</td>
+                          <td>{order.Order_Time || "-"}</td>
+                          <td>
+                            <span className="status yellow">
+                              {order.Order_Status || "New Order"}
+                            </span>
+                          </td>
+                          <td>{order.Delivery_Status || "-"}</td>
+                          <td>{order.Risk_Level || "-"}</td>
+                          <td>
+                            <button className="table-action-btn">
+                              View
+                            </button>
+                          </td>
+                        </tr>
+                      ))
+                    )}
                   </tbody>
 
                 </table>
@@ -703,7 +1050,7 @@ function AdminDashboard({ onLogout }) {
 
               <div className="inventory-summary-card">
                 <p>Total Products</p>
-                <h2>48</h2>
+                <h2>{inventoryData.length}</h2>
                 <span className="normal">
                   Active products
                 </span>
@@ -711,23 +1058,41 @@ function AdminDashboard({ onLogout }) {
 
               <div className="inventory-summary-card">
                 <p>Stock Available</p>
-                <h2>2,450</h2>
+                <h2>
+                  {inventoryData.reduce(
+                    (total, item) => total + Number(item.Available_Stock || 0),
+                    0
+                  )}
+                </h2>
                 <span className="normal">
                   Total available units
                 </span>
               </div>
 
               <div className="inventory-summary-card">
-                <p>Low Stock</p>
-                <h2>7</h2>
+                <h2>
+                {inventoryData.filter((item) => {
+                  const available = Number(item.Available_Stock || 0);
+                  const safety = Number(item.Safety_Stock || 0);
+                  const reorder = Number(item.Reorder_Level || 0);
+
+                  return available > safety && available <= reorder;
+                }).length}
+              </h2>
                 <span className="warning">
                   Restock soon
                 </span>
               </div>
 
               <div className="inventory-summary-card">
-                <p>Critical Stock</p>
-                <h2>3</h2>
+                <h2>
+                  {inventoryData.filter((item) => {
+                    const available = Number(item.Available_Stock || 0);
+                    const safety = Number(item.Safety_Stock || 0);
+
+                    return available > 0 && available <= safety;
+                  }).length}
+                </h2>
                 <span className="danger">
                   Immediate attention
                 </span>
@@ -744,48 +1109,44 @@ function AdminDashboard({ onLogout }) {
                 <h3>Stock Overview</h3>
 
                 <div className="inventory-stock-list">
+                  {[...inventoryData]
+                    .sort((a, b) =>
+                      Number(a.Available_Stock || 0) - Number(b.Available_Stock || 0)
+                    )
+                    .slice(0, 3)
+                    .map((item) => {
+                      const available = Number(item.Available_Stock || 0);
+                      const safety = Number(item.Safety_Stock || 0);
+                      const reorder = Number(item.Reorder_Level || 0);
 
-                  <div className="inventory-stock-item">
-                    <div>
-                      <strong>Serum A</strong>
-                      <p>SKU: PRD001</p>
-                    </div>
+                      const status =
+                        available <= 0
+                          ? "Out of Stock"
+                          : available <= safety
+                          ? "Critical"
+                          : available <= reorder
+                          ? "Low Stock"
+                          : "Available";
 
-                    <div>
-                      <span className="status green">
-                        120 Available
-                      </span>
-                    </div>
-                  </div>
+                      const statusClass =
+                        available <= safety ? "red" :
+                        available <= reorder ? "yellow" : "green";
 
+                      return (
+                        <div className="inventory-stock-item" key={item.id}>
+                          <div>
+                            <strong>{item.Product_Name || "-"}</strong>
+                            <p>SKU: {item.Product_Code || item.id}</p>
+                          </div>
 
-                  <div className="inventory-stock-item">
-                    <div>
-                      <strong>Cleanser B</strong>
-                      <p>SKU: PRD002</p>
-                    </div>
-
-                    <div>
-                      <span className="status yellow">
-                        35 Low Stock
-                      </span>
-                    </div>
-                  </div>
-
-
-                  <div className="inventory-stock-item">
-                    <div>
-                      <strong>Product C</strong>
-                      <p>SKU: PRD003</p>
-                    </div>
-
-                    <div>
-                      <span className="status red">
-                        8 Critical
-                      </span>
-                    </div>
-                  </div>
-
+                          <div>
+                            <span className={`status ${statusClass}`}>
+                              {available} {status}
+                            </span>
+                          </div>
+                        </div>
+                      );
+                    })}
                 </div>
               </div>
 
@@ -793,26 +1154,52 @@ function AdminDashboard({ onLogout }) {
               <div className="panel">
                 <h3>Inventory Alerts</h3>
 
-                <div className="alert danger-alert">
-                  <strong>Critical Stock</strong>
-                  <p>
-                    Product C has only 8 units remaining.
-                  </p>
-                </div>
+                
+                {(() => {
+                  const criticalProducts = inventoryData.filter((item) => {
+                    const available = Number(item.Available_Stock || 0);
+                    const safety = Number(item.Safety_Stock || 0);
+                    return available <= 0 || available <= safety;
+                  });
 
-                <div className="alert warning-alert">
-                  <strong>Low Stock Warning</strong>
-                  <p>
-                    Cleanser B is approaching minimum stock level.
-                  </p>
-                </div>
+                  const lowStockProducts = inventoryData.filter((item) => {
+                    const available = Number(item.Available_Stock || 0);
+                    const safety = Number(item.Safety_Stock || 0);
+                    const reorder = Number(item.Reorder_Level || 0);
+                    return available > safety && available <= reorder;
+                  });
 
-                <div className="alert success-alert">
-                  <strong>Inventory Stable</strong>
-                  <p>
-                    38 products currently have sufficient stock.
-                  </p>
-                </div>
+                  const stableProducts = inventoryData.filter((item) => {
+                    return Number(item.Available_Stock || 0) >
+                      Number(item.Reorder_Level || 0);
+                  });
+
+                  return (
+                    <>
+                      <div className="alert danger-alert">
+                        <strong>Critical / Out of Stock</strong>
+                        <p>
+                          {criticalProducts.length} products require immediate attention.
+                        </p>
+                      </div>
+
+                      <div className="alert warning-alert">
+                        <strong>Low Stock Warning</strong>
+                        <p>
+                          {lowStockProducts.length} products are approaching reorder level.
+                        </p>
+                      </div>
+
+                      <div className="alert success-alert">
+                        <strong>Inventory Stable</strong>
+                        <p>
+                          {stableProducts.length} products have sufficient available stock.
+                        </p>
+                      </div>
+                    </>
+                  );
+                })()}
+
               </div>
 
             </div>
@@ -840,20 +1227,23 @@ function AdminDashboard({ onLogout }) {
 
 
               <div className="inventory-filters">
-
                 <input
                   type="text"
-                  placeholder="Search Product ID or Product Name..."
+                  placeholder="Search Product Code or Product Name..."
+                  value={inventorySearch}
+                  onChange={(e) => setInventorySearch(e.target.value)}
                 />
 
-                <select>
-                  <option>All Stock Status</option>
-                  <option>In Stock</option>
-                  <option>Low Stock</option>
-                  <option>Critical Stock</option>
-                  <option>Out of Stock</option>
+                <select
+                  value={inventoryStatusFilter}
+                  onChange={(e) => setInventoryStatusFilter(e.target.value)}
+                >
+                  <option value="All">All Stock Status</option>
+                  <option value="In Stock">In Stock</option>
+                  <option value="Low Stock">Low Stock</option>
+                  <option value="Critical">Critical Stock</option>
+                  <option value="Out of Stock">Out of Stock</option>
                 </select>
-
               </div>
 
 
@@ -876,148 +1266,66 @@ function AdminDashboard({ onLogout }) {
                   </thead>
 
 
+                  
                   <tbody>
+                    {filteredInventory.length === 0 ? (
+                      <tr>
+                        <td colSpan={9} style={{ textAlign: "center" }}>
+                          No products found.
+                        </td>
+                      </tr>
+                    ) : (
+                      filteredInventory.map((item) => {
+                        const available = Number(item.Available_Stock || 0);
+                        const safety = Number(item.Safety_Stock || 0);
+                        const reorder = Number(item.Reorder_Level || 0);
 
-                    <tr>
-                      <td>PRD001</td>
-                      <td>Serum A</td>
-                      <td>150</td>
-                      <td>30</td>
-                      <td>120</td>
-                      <td>40</td>
+                        let status = "In Stock";
+                        let statusClass = "green";
 
-                      <td>
-                        <span className="status green">
-                          In Stock
-                        </span>
-                      </td>
+                        if (available <= 0) {
+                          status = "Out of Stock";
+                          statusClass = "red";
+                        } else if (available <= safety) {
+                          status = "Critical";
+                          statusClass = "red";
+                        } else if (available <= reorder) {
+                          status = "Low Stock";
+                          statusClass = "yellow";
+                        }
 
-                      <td>
-                        25/09/2026
-                        <br />
-                        08:30 AM
-                      </td>
+                        return (
+                          <tr key={item.id}>
+                            <td>{item.Product_Code || item.id}</td>
+                            <td>{item.Product_Name || "-"}</td>
+                            <td>{Number(item.Current_Stock || 0)}</td>
+                            <td>{Number(item.Reserved_Stock || 0)}</td>
+                            <td>{available}</td>
+                            <td>{reorder}</td>
 
-                      <td>
-                        <button className="table-action-btn">
-                          View
-                        </button>
-                      </td>
-                    </tr>
+                            <td>
+                              <span className={`status ${statusClass}`}>
+                                {status}
+                              </span>
+                            </td>
 
+                            <td>
+                              {item.Last_Updated
+                                ? new Date(item.Last_Updated).toLocaleString("en-GB")
+                                : "-"}
+                            </td>
 
-                    <tr>
-                      <td>PRD002</td>
-                      <td>Cleanser B</td>
-                      <td>50</td>
-                      <td>15</td>
-                      <td>35</td>
-                      <td>40</td>
-
-                      <td>
-                        <span className="status yellow">
-                          Low Stock
-                        </span>
-                      </td>
-
-                      <td>
-                        25/09/2026
-                        <br />
-                        08:45 AM
-                      </td>
-
-                      <td>
-                        <button className="table-action-btn">
-                          View
-                        </button>
-                      </td>
-                    </tr>
-
-
-                    <tr>
-                      <td>PRD003</td>
-                      <td>Product C</td>
-                      <td>12</td>
-                      <td>4</td>
-                      <td>8</td>
-                      <td>30</td>
-
-                      <td>
-                        <span className="status red">
-                          Critical
-                        </span>
-                      </td>
-
-                      <td>
-                        25/09/2026
-                        <br />
-                        09:02 AM
-                      </td>
-
-                      <td>
-                        <button className="table-action-btn">
-                          View
-                        </button>
-                      </td>
-                    </tr>
-
-
-                    <tr>
-                      <td>PRD004</td>
-                      <td>Product D</td>
-                      <td>0</td>
-                      <td>0</td>
-                      <td>0</td>
-                      <td>25</td>
-
-                      <td>
-                        <span className="status red">
-                          Out of Stock
-                        </span>
-                      </td>
-
-                      <td>
-                        25/09/2026
-                        <br />
-                        09:10 AM
-                      </td>
-
-                      <td>
-                        <button className="table-action-btn">
-                          View
-                        </button>
-                      </td>
-                    </tr>
-
-
-                    <tr>
-                      <td>PRD005</td>
-                      <td>Toner E</td>
-                      <td>200</td>
-                      <td>25</td>
-                      <td>175</td>
-                      <td>50</td>
-
-                      <td>
-                        <span className="status green">
-                          In Stock
-                        </span>
-                      </td>
-
-                      <td>
-                        25/09/2026
-                        <br />
-                        09:20 AM
-                      </td>
-
-                      <td>
-                        <button className="table-action-btn">
-                          View
-                        </button>
-                      </td>
-                    </tr>
-
+                            <td>
+                              <button className="table-action-btn">
+                                View
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })
+                    )}
                   </tbody>
+
 
                 </table>
 
@@ -1348,7 +1656,7 @@ function AdminDashboard({ onLogout }) {
 
             <div className="risk-summary-card">
                 <p>Total Risk Alerts</p>
-                <h2>24</h2>
+                <h2>{operationalRisks.length}</h2>
                 <span className="warning">
                 This month
                 </span>
@@ -1356,7 +1664,11 @@ function AdminDashboard({ onLogout }) {
 
             <div className="risk-summary-card">
                 <p>High Risk</p>
-                <h2>7</h2>
+                <h2>
+                  {operationalRisks.filter(
+                    (risk) => risk.Risk_Level === "High"
+                  ).length}
+                </h2>
                 <span className="danger">
                 Immediate attention
                 </span>
@@ -1364,7 +1676,11 @@ function AdminDashboard({ onLogout }) {
 
             <div className="risk-summary-card">
                 <p>Medium Risk</p>
-                <h2>10</h2>
+                <h2>
+                  {operationalRisks.filter(
+                    (risk) => risk.Risk_Level === "Medium"
+                  ).length}
+                </h2>
                 <span className="warning">
                 Monitor closely
                 </span>
@@ -1372,7 +1688,11 @@ function AdminDashboard({ onLogout }) {
 
             <div className="risk-summary-card">
                 <p>Low Risk</p>
-                <h2>7</h2>
+                <h2>
+                  {operationalRisks.filter(
+                    (risk) => risk.Risk_Level === "Low"
+                  ).length}
+                </h2>
                 <span className="normal">
                 Stable
                 </span>
@@ -1388,82 +1708,78 @@ function AdminDashboard({ onLogout }) {
             <div className="panel">
                 <h3>Risk Categories</h3>
 
+                
                 <div className="risk-category-list">
+                  {[
+                    { name: "Order Cancellation", color: "red" },
+                    { name: "Delivery Delay", color: "yellow" },
+                    { name: "Stock Shortage", color: "red" },
+                    { name: "Returns", color: "yellow" },
+                  ].map((category) => {
+                    const count = operationalRisks.filter(
+                      (risk) => risk.Risk_Type === category.name
+                    ).length;
 
-                <div className="risk-category-item">
-                    <div>
-                    <strong>Order Cancellation</strong>
-                    <p>Repeated customer cancellations</p>
-                    </div>
+                    return (
+                      <div className="risk-category-item" key={category.name}>
+                        <div>
+                          <strong>{category.name}</strong>
+                          <p>
+                            {category.name === "Order Cancellation"
+                              ? "Cancelled customer orders"
+                              : category.name === "Delivery Delay"
+                              ? "Orders experiencing delivery delays"
+                              : category.name === "Stock Shortage"
+                              ? "Orders waiting for sufficient stock"
+                              : "Returned customer orders"}
+                          </p>
+                        </div>
 
-                    <span className="status red">
-                    6 Alerts
-                    </span>
+                        <span className={`status ${category.color}`}>
+                          {count} Alerts
+                        </span>
+                      </div>
+                    );
+                  })}
                 </div>
 
-
-                <div className="risk-category-item">
-                    <div>
-                    <strong>Delivery Delay</strong>
-                    <p>Orders exceeding expected delivery time</p>
-                    </div>
-
-                    <span className="status yellow">
-                    5 Alerts
-                    </span>
-                </div>
-
-
-                <div className="risk-category-item">
-                    <div>
-                    <strong>Stock Shortage</strong>
-                    <p>Insufficient inventory for active orders</p>
-                    </div>
-
-                    <span className="status red">
-                    4 Alerts
-                    </span>
-                </div>
-
-
-                <div className="risk-category-item">
-                    <div>
-                    <strong>Returns</strong>
-                    <p>High number of returned orders</p>
-                    </div>
-
-                    <span className="status yellow">
-                    3 Alerts
-                    </span>
-                </div>
-
-                </div>
             </div>
 
 
             <div className="panel">
                 <h3>Recent Risk Alerts</h3>
 
-                <div className="alert danger-alert">
-                <strong>High Cancellation Risk</strong>
-                <p>
-                    Customer CUS018 has cancelled 4 orders recently.
-                </p>
-                </div>
+                
+                {[...operationalRisks]
+                  .sort(
+                    (a, b) =>
+                      (Date.parse(b.Date_Detected) || 0) -
+                      (Date.parse(a.Date_Detected) || 0)
+                  )
+                  .slice(0, 3)
+                  .map((risk, index) => (
+                    <div
+                      key={`${risk.Order_ID}-${risk.Risk_Type}-${index}`}
+                      className={`alert ${
+                        risk.Risk_Level === "High"
+                          ? "danger-alert"
+                          : "warning-alert"
+                      }`}
+                    >
+                      <strong>{risk.Risk_Type}</strong>
+                      <p>
+                        Order {risk.Order_ID} — {risk.Customer_Name}
+                      </p>
+                    </div>
+                  ))}
 
-                <div className="alert danger-alert">
-                <strong>Stock Shortage</strong>
-                <p>
-                    Product C stock may not support current demand.
-                </p>
-                </div>
+                {operationalRisks.length === 0 && (
+                  <div className="alert success-alert">
+                    <strong>No Active Risk Alerts</strong>
+                    <p>No operational risks detected from current order statuses.</p>
+                  </div>
+                )}
 
-                <div className="alert warning-alert">
-                <strong>Delivery Delay</strong>
-                <p>
-                    Several deliveries to Area B are delayed.
-                </p>
-                </div>
             </div>
 
             </div>
@@ -1531,168 +1847,67 @@ function AdminDashboard({ onLogout }) {
                 </thead>
 
 
+                
                 <tbody>
-
+                  {operationalRisks.length === 0 ? (
                     <tr>
-                    <td>RSK001</td>
-                    <td>ORD1061</td>
-                    <td>Sofia</td>
-                    <td>Cancellation</td>
-
-                    <td>
-                        <span className="status red">
-                        High
-                        </span>
-                    </td>
-
-                    <td>
-                        25/09/2026
-                        <br />
-                        09:20 AM
-                    </td>
-
-                    <td>
-                        <span className="status red">
-                        Active
-                        </span>
-                    </td>
-
-                    <td>
-                        <button className="table-action-btn">
-                        View
-                        </button>
-                    </td>
+                      <td colSpan={8} style={{ textAlign: "center" }}>
+                        No operational risks detected.
+                      </td>
                     </tr>
+                  ) : (
+                    [...operationalRisks]
+                      .sort(
+                        (a, b) =>
+                          (Date.parse(b.Date_Detected) || 0) -
+                          (Date.parse(a.Date_Detected) || 0)
+                      )
+                      .map((risk, index) => (
+                        <tr key={`${risk.Order_ID}-${risk.Risk_Type}`}>
+                          <td>{`RSK${String(index + 1).padStart(4, "0")}`}</td>
 
+                          <td>{risk.Order_ID || "-"}</td>
 
-                    <tr>
-                    <td>RSK002</td>
-                    <td>ORD1060</td>
-                    <td>Amir</td>
-                    <td>Stock Shortage</td>
+                          <td>{risk.Customer_Name || "-"}</td>
 
-                    <td>
-                        <span className="status red">
-                        High
-                        </span>
-                    </td>
+                          <td>{risk.Risk_Type}</td>
 
-                    <td>
-                        25/09/2026
-                        <br />
-                        09:05 AM
-                    </td>
+                          <td>
+                            <span
+                              className={`status ${
+                                risk.Risk_Level === "High"
+                                  ? "red"
+                                  : risk.Risk_Level === "Medium"
+                                  ? "yellow"
+                                  : "green"
+                              }`}
+                            >
+                              {risk.Risk_Level}
+                            </span>
+                          </td>
 
-                    <td>
-                        <span className="status yellow">
-                        Monitoring
-                        </span>
-                    </td>
+                          <td>
+                            {risk.Date_Detected
+                              ? new Date(risk.Date_Detected).toLocaleString("en-GB")
+                              : "-"}
+                          </td>
 
-                    <td>
-                        <button className="table-action-btn">
-                        View
-                        </button>
-                    </td>
-                    </tr>
+                          <td>
+                            <span className="status red">
+                              {risk.Status || "Active"}
+                            </span>
+                          </td>
 
-
-                    <tr>
-                    <td>RSK003</td>
-                    <td>ORD1049</td>
-                    <td>Haziq</td>
-                    <td>Delivery Delay</td>
-
-                    <td>
-                        <span className="status yellow">
-                        Medium
-                        </span>
-                    </td>
-
-                    <td>
-                        24/09/2026
-                        <br />
-                        04:30 PM
-                    </td>
-
-                    <td>
-                        <span className="status yellow">
-                        Monitoring
-                        </span>
-                    </td>
-
-                    <td>
-                        <button className="table-action-btn">
-                        View
-                        </button>
-                    </td>
-                    </tr>
-
-
-                    <tr>
-                    <td>RSK004</td>
-                    <td>ORD1038</td>
-                    <td>Nadia</td>
-                    <td>Return</td>
-
-                    <td>
-                        <span className="status yellow">
-                        Medium
-                        </span>
-                    </td>
-
-                    <td>
-                        24/09/2026
-                        <br />
-                        02:10 PM
-                    </td>
-
-                    <td>
-                        <span className="status green">
-                        Resolved
-                        </span>
-                    </td>
-
-                    <td>
-                        <button className="table-action-btn">
-                        View
-                        </button>
-                    </td>
-                    </tr>
-
-
-                    <tr>
-                    <td>RSK005</td>
-                    <td>ORD1025</td>
-                    <td>Farah</td>
-                    <td>Invalid Order</td>
-
-                    <td>
-                        <span className="status green">
-                        Low
-                        </span>
-                    </td>
-
-                    <td>
-                        23/09/2026
-                        <br />
-                        11:45 AM
-                    </td>
-
-                    <td>
-                        <span className="status green">
-                        Resolved
-                        </span>
-                    </td>
-
-                    <td>
-                        <button className="table-action-btn">
-                        View
-                        </button>
-                    </td>
-                    </tr>
-
+                          <td>
+                            <button className="table-action-btn">
+                              View
+                            </button>
+                          </td>
+                        </tr>
+                      ))
+                  )}
                 </tbody>
+
 
                 </table>
 
@@ -1798,27 +2013,32 @@ function AdminDashboard({ onLogout }) {
                 <h3>Predicted Demand Trend</h3>
 
                 <p className="forecast-chart-subtitle">
-                  Total predicted product demand by month for 2026
+                  {forecastStart && forecastEnd
+                    ? `Total predicted product demand from ${formatForecastDate(forecastStart)} to ${formatForecastDate(forecastEnd)}`
+                    : "Total predicted product demand by month"}
                 </p>
 
                 <div className="forecast-chart">
-                  {months.map((month) => {
-                    const qty = monthlyForecast[month] || 0;
+                  {monthlyForecast.map((item) => {
+                    const qty = item.quantity;
+                    const height = (qty / maxMonthlyDemand) * 100;
 
-                    const height =
-                      maxMonthlyDemand > 0
-                        ? (qty / maxMonthlyDemand) * 100
-                        : 0;
+                    const label = new Date(
+                      `${item.date}T00:00:00`
+                    ).toLocaleDateString("en-US", {
+                      month: "short",
+                      year: "numeric",
+                    });
 
                     return (
                       <div
-                        key={month}
+                        key={item.date}
                         style={{
-                          height: `${Math.max(height, 5)}%`
+                          height: `${Math.max(height, 5)}%`,
                         }}
-                        title={`${month}: ${Math.round(qty)} units`}
+                        title={`${label}: ${Math.round(qty)} units`}
                       >
-                        <span>{month}</span>
+                        <span>{label}</span>
                       </div>
                     );
                   })}
@@ -1834,7 +2054,7 @@ function AdminDashboard({ onLogout }) {
 
                   <p>
                     {highestDemandProduct
-                      ? `${highestDemandProduct.Product_Code} is predicted to have the highest demand in 2026 with approximately ${Math.round(
+                      ? `${highestDemandProduct.Product_Code} during the selected forecast period ${Math.round(
                           highestDemandProduct.Predicted_Quantity
                         ).toLocaleString()} units.`
                       : "Forecast data is loading."}
@@ -1859,7 +2079,7 @@ function AdminDashboard({ onLogout }) {
                   <p>
                     {highDemandCount} products are classified as high demand,
                     while {mediumDemandCount} are medium demand and{" "}
-                    {lowDemandCount} are low demand for 2026.
+                    {lowDemandCount} are low demand during the selected forecast period.
                   </p>
                 </div>
 
@@ -2011,15 +2231,15 @@ function AdminDashboard({ onLogout }) {
 
             <div className="customer-summary-card">
                 <p>Total Customers</p>
-                <h2>426</h2>
+                <h2>{customerSegmentation.length}</h2>
                 <span className="normal">
-                Registered customers
+                Historical customers analysed
                 </span>
             </div>
 
             <div className="customer-summary-card">
                 <p>High Value Customers</p>
-                <h2>82</h2>
+                <h2>{customerSegmentCounts["High-Value Active Customers"] || 0}</h2>
                 <span className="normal">
                 Frequent buyers
                 </span>
@@ -2027,17 +2247,17 @@ function AdminDashboard({ onLogout }) {
 
             <div className="customer-summary-card">
                 <p>Regular Customers</p>
-                <h2>261</h2>
+                <h2>{customerSegmentCounts["Regular Customers"] || 0}</h2>
                 <span className="normal">
                 Stable purchase activity
                 </span>
             </div>
 
             <div className="customer-summary-card">
-                <p>At-Risk Customers</p>
-                <h2>83</h2>
+                <p>AI Segments</p>
+                <h2>{Object.keys(customerSegmentCounts).length}</h2>
                 <span className="danger">
-                Monitor behaviour
+                AI-based customer groups
                 </span>
             </div>
 
@@ -2060,7 +2280,7 @@ function AdminDashboard({ onLogout }) {
                     </div>
 
                     <span className="status green">
-                    82 Customers
+                    {customerSegmentCounts["High-Value Active Customers"] || 0}
                     </span>
                 </div>
 
@@ -2072,61 +2292,42 @@ function AdminDashboard({ onLogout }) {
                     </div>
 
                     <span className="status green">
-                    261 Customers
+                    {customerSegmentCounts["Regular Customers"] || 0}
                     </span>
                 </div>
-
-
-                <div className="customer-segment-item">
-                    <div>
-                    <strong>Low Activity</strong>
-                    <p>Infrequent purchasing activity</p>
-                    </div>
-
-                    <span className="status yellow">
-                    56 Customers
-                    </span>
-                </div>
-
-
-                <div className="customer-segment-item">
-                    <div>
-                    <strong>At Risk</strong>
-                    <p>High cancellation or return behaviour</p>
-                    </div>
-
-                    <span className="status red">
-                    27 Customers
-                    </span>
-                </div>
-
                 </div>
             </div>
 
 
             <div className="panel">
-                <h3>Customer Insights</h3>
+              <h3>Customer Insights</h3>
 
-                <div className="alert success-alert">
-                <strong>Strong Customer Group</strong>
+              <div className="alert success-alert">
+                <strong>High-Value Customer Group</strong>
                 <p>
-                    High-value customers show consistent repeat purchases.
+                  {customerSegmentCounts["High-Value Active Customers"] || 0} customers
+                  are classified as High-Value Active Customers by the AI model.
                 </p>
-                </div>
+              </div>
 
-                <div className="alert warning-alert">
-                <strong>Low Activity</strong>
+              <div className="alert warning-alert">
+                <strong>Regular Customer Group</strong>
                 <p>
-                    Some customers have shown reduced purchase activity.
+                  {customerSegmentCounts["Regular Customers"] || 0} customers
+                  are classified as Regular Customers by the AI model.
                 </p>
-                </div>
+              </div>
 
-                <div className="alert danger-alert">
-                <strong>Risk Behaviour</strong>
+              <div className="alert danger-alert">
+                <strong>Customer Purchase Activity</strong>
                 <p>
-                    Several customers have repeated cancellation or return activity.
+                  {customerSegmentation.reduce(
+                    (sum, customer) => sum + Number(customer.Total_Orders || 0),
+                    0
+                  ).toLocaleString()} historical orders are represented
+                  in the customer segmentation dataset.
                 </p>
-                </div>
+              </div>
             </div>
 
             </div>
@@ -2141,7 +2342,7 @@ function AdminDashboard({ onLogout }) {
                 <h3>Customer Segmentation</h3>
 
                 <p className="customer-subtitle">
-                    View customer behaviour, segment and risk indicators
+                    View AI-based customer segments and historical purchasing behaviour
                 </p>
                 </div>
             </div>
@@ -2151,22 +2352,20 @@ function AdminDashboard({ onLogout }) {
 
                 <input
                 type="text"
-                placeholder="Search Customer ID or Name..."
+                placeholder="Search Customer ID..."
+                value={customerSearch}
+                onChange={(e) => setCustomerSearch(e.target.value)}
                 />
 
-                <select>
-                <option>All Segments</option>
-                <option>High Value</option>
-                <option>Regular</option>
-                <option>Low Activity</option>
-                <option>At Risk</option>
-                </select>
-
-                <select>
-                <option>All Risk Levels</option>
-                <option>Low</option>
-                <option>Medium</option>
-                <option>High</option>
+                <select
+                  value={customerSegmentFilter}
+                  onChange={(e) => setCustomerSegmentFilter(e.target.value)}
+                >
+                  <option value="All">All Segments</option>
+                  <option value="Regular Customers">Regular Customers</option>
+                  <option value="High-Value Active Customers">
+                    High-Value Active Customers
+                  </option>
                 </select>
 
             </div>
@@ -2177,166 +2376,36 @@ function AdminDashboard({ onLogout }) {
                 <table>
 
                 <thead>
-                    <tr>
+                  <tr>
                     <th>Customer ID</th>
-                    <th>Customer</th>
+                    <th>AI Segment</th>
                     <th>Total Orders</th>
+                    <th>Total Spent (RM)</th>
                     <th>Cancelled</th>
-                    <th>Returns</th>
-                    <th>Segment</th>
-                    <th>Risk Level</th>
-                    <th>Last Order</th>
-                    <th>Action</th>
-                    </tr>
+                    <th>Returned</th>
+                    <th>QC Issues</th>
+                  </tr>
                 </thead>
 
 
                 <tbody>
-
+                  {filteredCustomerSegmentation.length === 0 ? (
                     <tr>
-                    <td>CUS001</td>
-                    <td>Aina</td>
-                    <td>28</td>
-                    <td>1</td>
-                    <td>0</td>
-
-                    <td>
-                        <span className="status green">
-                        High Value
-                        </span>
-                    </td>
-
-                    <td>
-                        <span className="status green">
-                        Low
-                        </span>
-                    </td>
-
-                    <td>25/09/2026</td>
-
-                    <td>
-                        <button className="table-action-btn">
-                        View
-                        </button>
-                    </td>
+                      <td colSpan="7">No customer segmentation data available.</td>
                     </tr>
-
-
-                    <tr>
-                    <td>CUS002</td>
-                    <td>Farah</td>
-                    <td>14</td>
-                    <td>1</td>
-                    <td>1</td>
-
-                    <td>
-                        <span className="status green">
-                        Regular
-                        </span>
-                    </td>
-
-                    <td>
-                        <span className="status green">
-                        Low
-                        </span>
-                    </td>
-
-                    <td>25/09/2026</td>
-
-                    <td>
-                        <button className="table-action-btn">
-                        View
-                        </button>
-                    </td>
-                    </tr>
-
-
-                    <tr>
-                    <td>CUS003</td>
-                    <td>Amir</td>
-                    <td>9</td>
-                    <td>2</td>
-                    <td>1</td>
-
-                    <td>
-                        <span className="status yellow">
-                        Low Activity
-                        </span>
-                    </td>
-
-                    <td>
-                        <span className="status yellow">
-                        Medium
-                        </span>
-                    </td>
-
-                    <td>22/09/2026</td>
-
-                    <td>
-                        <button className="table-action-btn">
-                        View
-                        </button>
-                    </td>
-                    </tr>
-
-
-                    <tr>
-                    <td>CUS004</td>
-                    <td>Sofia</td>
-                    <td>11</td>
-                    <td>4</td>
-                    <td>2</td>
-
-                    <td>
-                        <span className="status red">
-                        At Risk
-                        </span>
-                    </td>
-
-                    <td>
-                        <span className="status red">
-                        High
-                        </span>
-                    </td>
-
-                    <td>25/09/2026</td>
-
-                    <td>
-                        <button className="table-action-btn">
-                        View
-                        </button>
-                    </td>
-                    </tr>
-
-
-                    <tr>
-                    <td>CUS005</td>
-                    <td>Hana</td>
-                    <td>17</td>
-                    <td>0</td>
-                    <td>1</td>
-
-                    <td>
-                        <span className="status green">
-                        Regular
-                        </span>
-                    </td>
-
-                    <td>
-                        <span className="status green">
-                        Low
-                        </span>
-                    </td>
-
-                    <td>24/09/2026</td>
-
-                    <td>
-                        <button className="table-action-btn">
-                        View
-                        </button>
-                    </td>
-                    </tr>
-
+                  ) : (
+                    filteredCustomerSegmentation.map((customer, index) => (
+                      <tr key={`${customer.Customer_ID}-${index}`}>
+                        <td>{customer.Customer_ID}</td>
+                        <td>{customer.Customer_Segment}</td>
+                        <td>{customer.Total_Orders}</td>
+                        <td>{Number(customer.Total_Spent || 0).toFixed(2)}</td>
+                        <td>{customer.Cancelled_Orders}</td>
+                        <td>{customer.Returned_Orders}</td>
+                        <td>{customer.QC_Issue_Orders}</td>
+                      </tr>
+                    ))
+                  )}
                 </tbody>
 
                 </table>
@@ -2378,15 +2447,17 @@ function AdminDashboard({ onLogout }) {
 
             <div className="anomaly-summary-card">
                 <p>Total Transactions</p>
-                <h2>1,248</h2>
+                <h2>
+                  {anomalyLoading ? "..." : anomalyTotalTransactions.toLocaleString()}
+                </h2>
                 <span className="normal">
-                Analyzed transactions
+                  Historical records analyzed by AI
                 </span>
             </div>
 
             <div className="anomaly-summary-card">
                 <p>Anomalies Detected</p>
-                <h2>18</h2>
+                <h2>{anomalyLoading ? "..." : anomalyData.length.toLocaleString()}</h2>
                 <span className="danger">
                 Requires review
                 </span>
@@ -2394,7 +2465,7 @@ function AdminDashboard({ onLogout }) {
 
             <div className="anomaly-summary-card">
                 <p>Under Review</p>
-                <h2>6</h2>
+                <h2>{anomalyUnderReviewCount.toLocaleString()}</h2>
                 <span className="warning">
                 Pending investigation
                 </span>
@@ -2402,7 +2473,7 @@ function AdminDashboard({ onLogout }) {
 
             <div className="anomaly-summary-card">
                 <p>Resolved</p>
-                <h2>12</h2>
+                <h2>{anomalyResolvedCount.toLocaleString()}</h2>
                 <span className="normal">
                 Reviewed anomalies
                 </span>
@@ -2421,82 +2492,110 @@ function AdminDashboard({ onLogout }) {
                 <div className="anomaly-category-list">
 
                 <div className="anomaly-category-item">
-                    <div>
-                    <strong>Unusual Order Quantity</strong>
-                    <p>Order quantity significantly differs from normal behaviour</p>
-                    </div>
-
-                    <span className="status red">
-                    6 Detected
-                    </span>
+                  <div>
+                    <strong>Returned Orders</strong>
+                    <p>Anomalous records involving returned orders</p>
+                  </div>
+                  <span className="status red">
+                    {anomalyCategoryCounts.returned} Detected
+                  </span>
                 </div>
-
 
                 <div className="anomaly-category-item">
-                    <div>
-                    <strong>Repeated Cancellation</strong>
-                    <p>Abnormal cancellation activity detected</p>
-                    </div>
-
-                    <span className="status yellow">
-                    5 Detected
-                    </span>
+                  <div>
+                    <strong>Cancelled Orders</strong>
+                    <p>Anomalous records involving cancelled orders</p>
+                  </div>
+                  <span className="status yellow">
+                    {anomalyCategoryCounts.cancelled} Detected
+                  </span>
                 </div>
-
 
                 <div className="anomaly-category-item">
-                    <div>
-                    <strong>Unusual Order Time</strong>
-                    <p>Orders placed outside normal activity patterns</p>
-                    </div>
-
-                    <span className="status yellow">
-                    4 Detected
-                    </span>
+                  <div>
+                    <strong>Delayed Orders</strong>
+                    <p>Anomalous records involving delayed orders</p>
+                  </div>
+                  <span className="status yellow">
+                    {anomalyCategoryCounts.delayed} Detected
+                  </span>
                 </div>
-
 
                 <div className="anomaly-category-item">
-                    <div>
-                    <strong>Abnormal Transaction Pattern</strong>
-                    <p>Transaction behaviour differs from historical patterns</p>
-                    </div>
-
-                    <span className="status red">
-                    3 Detected
-                    </span>
+                  <div>
+                    <strong>Other Anomalous Records</strong>
+                    <p>Anomalies without returned, cancelled or delayed flags</p>
+                  </div>
+                  <span className="status red">
+                    {anomalyCategoryCounts.other} Detected
+                  </span>
                 </div>
+
+
 
                 </div>
             </div>
 
 
             <div className="panel">
-                <h3>Recent Anomaly Alerts</h3>
+  <h3>Recent Anomaly Alerts</h3>
 
-                <div className="alert danger-alert">
-                <strong>Unusual Order Quantity</strong>
-                <p>
-                    ORD1072 contains a significantly higher quantity than normal.
-                </p>
-                </div>
+  {[...anomalyData]
+    .sort((a, b) => {
+      const dateA = new Date(a.Order_Date || 0);
+      const dateB = new Date(b.Order_Date || 0);
 
-                <div className="alert warning-alert">
-                <strong>Repeated Cancellation</strong>
-                <p>
-                    CUS004 shows unusual cancellation activity.
-                </p>
-                </div>
+      return dateB - dateA;
+    })
+    .slice(0, 3)
+    .map((anomaly, index) => {
+      const anomalyType =
+        anomaly.Returned_Flag === "Yes"
+          ? "Returned Order"
+          : anomaly.Cancelled_Flag === "Yes"
+          ? "Cancelled Order"
+          : anomaly.Delayed_Flag === "Yes"
+          ? "Delayed Order"
+          : "Other Anomaly";
 
-                <div className="alert warning-alert">
-                <strong>Unusual Order Time</strong>
-                <p>
-                    An order was placed outside the customer's normal order pattern.
-                </p>
-                </div>
-            </div>
+      return (
+        <div
+          className={`alert ${
+            Number(anomaly.Anomaly_Score) < -0.1
+              ? "danger-alert"
+              : "warning-alert"
+          }`}
+          key={`${anomaly.Order_ID}-${index}`}
+        >
+          <strong>{anomalyType}</strong>
 
-            </div>
+          <p>
+            Order {anomaly.Order_ID || "-"} was flagged by AI
+            on {anomaly.Order_Date || "-"}.
+          </p>
+
+          <p>
+            Anomaly Score:{" "}
+            {Number(anomaly.Anomaly_Score).toFixed(4)}
+          </p>
+        </div>
+      );
+    })}
+
+  {!anomalyLoading &&
+    !anomalyError &&
+    anomalyData.length === 0 && (
+      <div className="alert success-alert">
+        <strong>No Anomaly Alerts</strong>
+        <p>No anomalies detected in the analyzed dataset.</p>
+      </div>
+    )}
+
+  {anomalyLoading && <p>Loading anomaly alerts...</p>}
+
+  {anomalyError && <p>{anomalyError}</p>}
+</div>
+</div>
 
 
             {/* ANOMALY TABLE */}
@@ -2558,114 +2657,73 @@ function AdminDashboard({ onLogout }) {
 
 
                 <tbody>
-
+                  {anomalyLoading ? (
                     <tr>
-                    <td>ANM001</td>
-                    <td>ORD1072</td>
-                    <td>Haziq</td>
-                    <td>Unusual Order Quantity</td>
-                    <td>-0.82</td>
-
-                    <td>
-                        25/09/2026
-                        <br />
-                        10:12 AM
-                    </td>
-
-                    <td>
-                        <span className="status red">
-                        Detected
-                        </span>
-                    </td>
-
-                    <td>
-                        <button className="table-action-btn">
-                        View
-                        </button>
-                    </td>
+                      <td colSpan="8">Loading anomaly data...</td>
                     </tr>
-
-
+                  ) : anomalyError ? (
                     <tr>
-                    <td>ANM002</td>
-                    <td>ORD1061</td>
-                    <td>Sofia</td>
-                    <td>Repeated Cancellation</td>
-                    <td>-0.71</td>
-
-                    <td>
-                        25/09/2026
-                        <br />
-                        09:25 AM
-                    </td>
-
-                    <td>
-                        <span className="status yellow">
-                        Under Review
-                        </span>
-                    </td>
-
-                    <td>
-                        <button className="table-action-btn">
-                        View
-                        </button>
-                    </td>
+                      <td colSpan="8">{anomalyError}</td>
                     </tr>
-
-
+                  ) : anomalyData.length === 0 ? (
                     <tr>
-                    <td>ANM003</td>
-                    <td>ORD1054</td>
-                    <td>Nadia</td>
-                    <td>Unusual Order Time</td>
-                    <td>-0.63</td>
-
-                    <td>
-                        24/09/2026
-                        <br />
-                        11:48 PM
-                    </td>
-
-                    <td>
-                        <span className="status yellow">
-                        Under Review
-                        </span>
-                    </td>
-
-                    <td>
-                        <button className="table-action-btn">
-                        View
-                        </button>
-                    </td>
+                      <td colSpan="8">No anomalies detected.</td>
                     </tr>
+                  ) : (
+                    anomalyData.map((anomaly, index) => {
+                      const status =
+                        anomalyReviewStatuses[String(anomaly.Order_ID)] || "Detected";
 
+                      return (
+                        <tr key={`${anomaly.Order_ID}-${index}`}>
+                          <td>{`ANM${String(index + 1).padStart(4, "0")}`}</td>
 
-                    <tr>
-                    <td>ANM004</td>
-                    <td>ORD1048</td>
-                    <td>Farah</td>
-                    <td>Abnormal Transaction Pattern</td>
-                    <td>-0.58</td>
+                          <td>{anomaly.Order_ID || "-"}</td>
 
-                    <td>
-                        24/09/2026
-                        <br />
-                        03:18 PM
-                    </td>
+                          <td>{anomaly.Customer_ID || "-"}</td>
 
-                    <td>
-                        <span className="status green">
-                        Resolved
-                        </span>
-                    </td>
+                          <td>
+                            {anomaly.Returned_Flag === "Yes"
+                              ? "Returned Order"
+                              : anomaly.Cancelled_Flag === "Yes"
+                              ? "Cancelled Order"
+                              : anomaly.Delayed_Flag === "Yes"
+                              ? "Delayed Order"
+                              : "Other Anomaly"}
+                          </td>
 
-                    <td>
-                        <button className="table-action-btn">
-                        View
-                        </button>
-                    </td>
-                    </tr>
+                          <td>
+                            {Number(anomaly.Anomaly_Score).toFixed(4)}
+                          </td>
 
+                          <td>{anomaly.Order_Date || "-"}</td>
+
+                          <td>
+                            <span
+                              className={`status ${
+                                status === "Resolved"
+                                  ? "green"
+                                  : status === "Under Review"
+                                  ? "yellow"
+                                  : "red"
+                              }`}
+                            >
+                              {status}
+                            </span>
+                          </td>
+
+                          <td>
+                            <button
+                              className="table-action-btn"
+                              onClick={() => setSelectedAnomaly(anomaly)}
+                            >
+                              View
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
                 </tbody>
 
                 </table>
@@ -2673,6 +2731,83 @@ function AdminDashboard({ onLogout }) {
             </div>
 
             </div>
+
+            {/* ANOMALY DETAILS MODAL */}
+            {selectedAnomaly && (() => {
+              const orderId = String(selectedAnomaly.Order_ID || "");
+              const status = anomalyReviewStatuses[orderId] || "Detected";
+
+              return (
+                <div
+                  className="anomaly-modal-overlay"
+                  onClick={() => setSelectedAnomaly(null)}
+                >
+                  <div
+                    className="anomaly-modal-content"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <div className="anomaly-modal-header">
+                      <h3>Anomaly Details</h3>
+
+                      <button
+                        className="anomaly-modal-close"
+                        onClick={() => setSelectedAnomaly(null)}
+                      >
+                        ✕
+                      </button>
+                    </div>
+
+                    <div className="anomaly-modal-body">
+                      <p><strong>Order ID:</strong> {selectedAnomaly.Order_ID || "-"}</p>
+                      <p><strong>Customer ID:</strong> {selectedAnomaly.Customer_ID || "-"}</p>
+                      <p><strong>Product:</strong> {selectedAnomaly.Product_Name || "-"}</p>
+                      <p><strong>Quantity:</strong> {selectedAnomaly.Quantity ?? "-"}</p>
+                      <p><strong>Amount:</strong> RM {Number(selectedAnomaly.Amount || 0).toFixed(2)}</p>
+                      <p><strong>Order Date:</strong> {selectedAnomaly.Order_Date || "-"}</p>
+                      <p><strong>Anomaly Score:</strong> {Number(selectedAnomaly.Anomaly_Score).toFixed(4)}</p>
+
+                      <p>
+                        <strong>Review Status:</strong>{" "}
+                        <span className={`status ${
+                          status === "Resolved"
+                            ? "green"
+                            : status === "Under Review"
+                            ? "yellow"
+                            : "red"
+                        }`}>
+                          {status}
+                        </span>
+                      </p>
+                    </div>
+
+                    <div className="anomaly-modal-actions">
+                      {status === "Detected" && (
+                        <button
+                          disabled={anomalySaving}
+                          onClick={() => updateAnomalyStatus(selectedAnomaly, "Under Review")}
+                        >
+                          Start Review
+                        </button>
+                      )}
+
+                      {status === "Under Review" && (
+                        <button
+                          disabled={anomalySaving}
+                          onClick={() => updateAnomalyStatus(selectedAnomaly, "Resolved")}
+                        >
+                          Resolve
+                        </button>
+                      )}
+
+                      <button onClick={() => setSelectedAnomaly(null)}>
+                        Close
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
+
         </>
         )}
 

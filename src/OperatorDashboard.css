@@ -132,7 +132,7 @@
 
 .operator-summary-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   gap: 18px;
   margin-bottom: 24px;
 }
@@ -177,8 +177,8 @@
 
 .operator-dashboard-grid {
   display: grid;
-  grid-template-columns: 1.5fr 1fr;
-  gap: 20px;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+  gap: 45px;
   margin-bottom: 24px;
 }
 
@@ -886,4 +886,190 @@
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.operator-inventory-top-grid {
+  display: grid;
+  grid-template-columns: 1fr 1.25fr;
+  gap: 24px;
+  align-items: stretch;
+  margin-bottom: 24px;
+}
+
+.operator-inventory-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 18px;
+}
+
+.operator-inventory-summary-grid .operator-card {
+  margin: 0;
+  min-height: 140px;
+}
+
+.operator-inventory-alert-panel {
+  margin: 0;
+  height: 100%;
+}
+
+.operator-inventory-alert-panel .operator-alert {
+  margin-bottom: 14px;
+}
+
+.operator-inventory-alert-panel .operator-alert:last-child {
+  margin-bottom: 0;
+}
+
+.operator-inventory-top-grid {
+  display: block;
+  margin-bottom: 24px;
+}
+
+.operator-inventory-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 18px;
+}
+
+.operator-rejection-products,
+.operator-rejection-checklist {
+  margin: 12px 0 20px;
+}
+
+.operator-rejection-product-row,
+.operator-rejection-checklist > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 10px 0;
+  border-bottom: 1px solid #eee;
+}
+
+.operator-rejection-reason {
+  background: #fff0f0;
+  color: #a61b1b;
+  padding: 14px;
+  border-radius: 8px;
+  margin: 12px 0 20px;
+}
+
+.operator-correction-confirm {
+  display: flex;
+  justify-content: flex-start;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  margin: 18px 0;
+  text-align: left;
+}
+
+.operator-correction-confirm input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  margin: 0;
+  accent-color: #d62c87;
+}
+
+.operator-correction-confirm span {
+  flex: 1;
+  text-align: left;
+  font-size: 13px;
+}
+
+.operator-correction-confirm input {
+  accent-color: #d62c87;
+}
+
+/* ORDER REJECTION ACTION BUTTONS */
+
+.operator-recheck-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 12px;
+  margin-top: 20px;
+}
+
+.operator-recheck-close-btn,
+.operator-recheck-send-btn {
+  width: 150px;
+  height: 42px;
+  padding: 0 12px;
+  border-radius: 9px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  flex: none;
+}
+
+.operator-recheck-close-btn {
+  background: #e5e7eb;
+  color: #1f2937;
+  border: none;
+}
+
+.operator-recheck-send-btn {
+  background: #d62c87;
+  color: white;
+  border: none;
+}
+
+.operator-recheck-send-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.operator-alert-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  cursor: pointer;
+}
+
+.operator-alert-header p {
+  margin: 6px 0 0;
+}
+
+.operator-alert-toggle {
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.operator-alert-list {
+  margin-top: 12px;
+  padding-left: 18px;
+}
+
+.operator-alert-list li {
+  margin-bottom: 8px;
+}
+
+.operator-alert-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  cursor: pointer;
+}
+
+.operator-alert-header p {
+  margin: 6px 0 0;
+}
+
+.operator-alert-toggle {
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.operator-alert-list {
+  margin-top: 12px;
+  padding-left: 18px;
+}
+
+.operator-alert-list li {
+  margin-bottom: 8px;
 }

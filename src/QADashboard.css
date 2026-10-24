@@ -1328,3 +1328,212 @@ table tbody tr:hover {
   font-weight: 700;
   text-align: right;
 }
+
+
+/* ANALYTICS CUSTOM DATE POPUP */
+
+.qa-date-filter-wrapper {
+  position: relative;
+  display: inline-block;
+}
+
+.qa-date-popup {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  width: 290px;
+  padding: 18px;
+  background: #ffffff;
+  border: 1px solid #f3c7d7;
+  border-radius: 12px;
+  box-shadow: 0 8px 25px rgba(0, 0, 0, 0.12);
+  z-index: 1000;
+}
+
+.qa-date-popup h4 {
+  margin: 0 0 15px;
+  font-size: 15px;
+  color: #333333;
+}
+
+.qa-date-popup-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+
+.qa-date-popup-field label {
+  font-size: 13px;
+  font-weight: 600;
+  color: #555555;
+}
+
+.qa-date-popup-field input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 9px 10px;
+  border: 1px solid #dddddd;
+  border-radius: 7px;
+  background: white;
+  color: #333333;
+}
+
+.qa-date-popup-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 15px;
+}
+
+.qa-date-cancel-btn,
+.qa-date-apply-btn {
+  padding: 9px 16px;
+  border-radius: 7px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.qa-date-cancel-btn {
+  background: #ffffff;
+  color: #555555;
+  border: 1px solid #dddddd;
+}
+
+.qa-date-apply-btn {
+  background: #e83e8c;
+  color: white;
+  border: none;
+}
+
+.qa-date-apply-btn:hover {
+  background: #d92c7c;
+}
+
+/* QA QUALITY ISSUES LINE GRAPH */
+
+.qa-line-chart-container {
+  position: relative;
+  width: 100%;
+  min-height: 270px;
+  padding-top: 12px;
+}
+
+.qa-line-chart {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+
+
+.qa-line-tooltip {
+  position: absolute;
+  transform: translate(-50%, -115%);
+  z-index: 10;
+
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+
+  padding: 12px 15px;
+  background: #ffffff;
+  border: 1px solid #f4c2d9;
+  border-radius: 10px;
+  box-shadow: 0 5px 18px rgba(0, 0, 0, 0.12);
+
+  font-size: 12px;
+  color: #333333;
+  pointer-events: none;
+  white-space: nowrap;
+
+  transition: left 0.12s ease, top 0.12s ease;
+}
+
+.qa-line-tooltip strong {
+  font-size: 13px;
+  color: #d72c7b;
+  margin-bottom: 3px;
+}
+
+.qa-line-tooltip span {
+  white-space: nowrap;
+}
+
+@media (max-width: 768px) {
+  .qa-line-chart-container {
+    overflow-x: auto;
+  }
+
+  .qa-line-chart {
+    min-width: 530px;
+  }
+}
+
+
+/* ALL PRODUCT ISSUE RANKING FILTER */
+
+.qa-ranking-filter {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.qa-ranking-filter select,
+.qa-ranking-filter input {
+  padding: 8px 12px;
+  border: 1px solid #dddddd;
+  border-radius: 7px;
+  background: #ffffff;
+  color: #333333;
+  font-size: 13px;
+}
+
+.qa-ranking-filter select {
+  min-width: 110px;
+}
+
+.qa-ranking-filter input {
+  width: 110px;
+  box-sizing: border-box;
+}
+
+.qa-ranking-filter select:focus,
+.qa-ranking-filter input:focus {
+  outline: none;
+  border-color: #e52d87;
+}
+
+.qa-summary-grid.qa-summary-five {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 16px;
+}
+
+
+/* Corrective Action Document */
+.qa-corrective-document {
+  max-width: 950px;
+  margin: 0 auto 24px;
+  padding: 36px;
+  background: #fff;
+  border: 1px solid #e5e5e5;
+  box-shadow: 0 5px 25px rgba(0, 0, 0, 0.06);
+}
+
+.qa-corrective-document textarea {
+  min-height: 100px;
+  resize: vertical;
+}
+
+.qa-corrective-document label {
+  font-weight: 600;
+}
+
+@media (max-width: 650px) {
+  .qa-corrective-document {
+    padding: 20px;
+  }
+}

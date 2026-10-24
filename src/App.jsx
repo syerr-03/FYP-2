@@ -5,7 +5,6 @@ import AdminDashboard from "./AdminDashboard";
 import OperatorDashboard from "./OperatorDashboard";
 import QCDashboard from "./QCDashboard";
 import QADashboard from "./QADashboard";
-import ManageDashboard from "./ManageDashboard";
 
 function App() {
   const [userId, setUserId] = useState("");
@@ -45,15 +44,6 @@ function App() {
       setRole("qa");
       setMessage("");
     }
-
-    else if (
-      userId === "manager001" &&
-      password === "manager123"
-    ) {
-      setRole("management");
-      setMessage("");
-    }
-
     else {
       setMessage("Invalid User ID or Password");
     }
@@ -101,13 +91,6 @@ function App() {
     );
   }
 
-  if (role === "management") {
-    return (
-      <ManageDashboard
-        onLogout={handleLogout}
-      />
-    );
-  }
 
   return (
     <div className="login-page">
