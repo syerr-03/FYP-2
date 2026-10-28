@@ -21,6 +21,7 @@ function AdminDashboard({ onLogout }) {
   const [showCustomDatePopup, setShowCustomDatePopup] = useState(true);
   const [orders, setOrders] = useState([]);
   const [inventoryData, setInventoryData] = useState([]);
+  const [showAllStockPredictions, setShowAllStockPredictions] = useState(false);
   const [inventorySearch, setInventorySearch] = useState("");
   const [inventoryStatusFilter, setInventoryStatusFilter] = useState("All");
   const [customerSegmentation, setCustomerSegmentation] = useState([]);
@@ -291,6 +292,16 @@ orders.forEach((order) => {
 });
 
 const customerData = Array.from(customerMap.values());
+
+const stockPredictions = [
+  { Product_Code: "JF", Product_Name: "JOIN FREE", Restock: 45 },
+  { Product_Code: "SC5", Product_Name: "KASEH SKINCARE 5 IN 1", Restock: 30 },
+  { Product_Code: "MELICA30", Product_Name: "MELICA INTENSIVE NIGHT CREAM 30ML", Restock: 25 },
+  { Product_Code: "A-LOVE", Product_Name: "A-LOVE CLEANSER", Restock: 40 },
+  { Product_Code: "P005", Product_Name: "Product E", Restock: 35 },
+  { Product_Code: "P006", Product_Name: "Product F", Restock: 20 },
+  { Product_Code: "P007", Product_Name: "Product G", Restock: 15 },
+];
 
 const filteredInventory = inventoryData.filter((item) => {
   const keyword = inventorySearch.trim().toLowerCase();
@@ -1106,48 +1117,62 @@ return (
             <div className="dashboard-grid">
 
               <div className="panel">
-                <h3>Stock Overview</h3>
+
+                <div style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  width: "100%"
+                }}>
+                  <h3 style={{ margin: 0, whiteSpace: "nowrap" }}>
+                    AI Stock Prediction – Next Month
+                  </h3>
+
+                  <button
+                    onClick={() => setShowAllStockPredictions(!showAllStockPredictions)}
+                    style={{
+                      background: "none",
+                      border: "none",
+                      color: "#d82d83",
+                      fontWeight: "600",
+                      cursor: "pointer",
+                      marginLeft: "auto",
+                      flexShrink: 0,
+                      whiteSpace: "nowrap"
+                    }}
+                  >
+                    {showAllStockPredictions ? "See Less" : "See More"}
+                  </button>
+                </div>
+
+                <p style={{ color: "#777", marginBottom: "20px" }}>
+                  Recommended stock replenishment for November 2026
+                </p>
 
                 <div className="inventory-stock-list">
-                  {[...inventoryData]
-                    .sort((a, b) =>
-                      Number(a.Available_Stock || 0) - Number(b.Available_Stock || 0)
-                    )
-                    .slice(0, 3)
-                    .map((item) => {
-                      const available = Number(item.Available_Stock || 0);
-                      const safety = Number(item.Safety_Stock || 0);
-                      const reorder = Number(item.Reorder_Level || 0);
 
-                      const status =
-                        available <= 0
-                          ? "Out of Stock"
-                          : available <= safety
-                          ? "Critical"
-                          : available <= reorder
-                          ? "Low Stock"
-                          : "Available";
+                  {(showAllStockPredictions
+                    ? stockPredictions
+                    : stockPredictions.slice(0, 3)
+                  ).map((item) => (
 
-                      const statusClass =
-                        available <= safety ? "red" :
-                        available <= reorder ? "yellow" : "green";
+                    <div className="inventory-stock-item" key={item.Product_Code}>
 
-                      return (
-                        <div className="inventory-stock-item" key={item.id}>
-                          <div>
-                            <strong>{item.Product_Name || "-"}</strong>
-                            <p>SKU: {item.Product_Code || item.id}</p>
-                          </div>
+                      <div>
+                        <strong>{item.Product_Name}</strong>
+                        <p>SKU: {item.Product_Code}</p>
+                      </div>
 
-                          <div>
-                            <span className={`status ${statusClass}`}>
-                              {available} {status}
-                            </span>
-                          </div>
-                        </div>
-                      );
-                    })}
+                      <span className="status yellow">
+                        +{item.Restock} units
+                      </span>
+
+                    </div>
+
+                  ))}
+
                 </div>
+
               </div>
 
 
