@@ -6,6 +6,16 @@ import {
   doc,
   setDoc,
 } from "firebase/firestore";
+import {
+  ScatterChart,
+  Scatter,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  ResponsiveContainer,
+  ReferenceLine,
+} from "recharts";
 import "./AdminDashboard.css";
 
 function AdminDashboard({ onLogout }) {
@@ -28,6 +38,8 @@ function AdminDashboard({ onLogout }) {
   const [customerSegmentCounts, setCustomerSegmentCounts] = useState({});
   const [customerSearch, setCustomerSearch] = useState("");
   const [customerSegmentFilter, setCustomerSegmentFilter] = useState("All");
+  const [showAttentionDetails, setShowAttentionDetails] = useState(false);
+  const [customerIssueFilter, setCustomerIssueFilter] = useState("All");
   const [anomalyData, setAnomalyData] = useState([]);
   const [anomalyLoading, setAnomalyLoading] = useState(false);
   const [anomalyError, setAnomalyError] = useState("");
@@ -94,6 +106,7 @@ function AdminDashboard({ onLogout }) {
   const [forecastData, setForecastData] = useState([]);
   const [forecastLoading, setForecastLoading] = useState(true);
   const [forecastMonths, setForecastMonths] = useState(3);
+  const [selectedForecastProduct, setSelectedForecastProduct] = useState("all");
   const [forecastStart, setForecastStart] = useState("");
   const [forecastEnd, setForecastEnd] = useState("");
   
@@ -146,27 +159,31 @@ function AdminDashboard({ onLogout }) {
       (a, b) => b.Predicted_Quantity - a.Predicted_Quantity
     );
 
-    const getDemandCategory = (qty) => {
-      if (qty >= 1000) return "High";
-      if (qty >= 300) return "Medium";
-      return "Low";
-    };
+    
+    
+      const getDemandCategory = (qty) => {
+        if (qty >= 100) return "High";
+        if (qty >= 50) return "Medium";
+        return "Low";
+      };
 
-    const highDemandCount = forecastSummary.filter(
-      (item) => item.Predicted_Quantity >= 1000
-    ).length;
+      const highDemandCount = forecastSummary.filter(
+        (item) => item.Predicted_Quantity >= 100
+      ).length;
 
-    const mediumDemandCount = forecastSummary.filter(
-      (item) =>
-        item.Predicted_Quantity >= 300 &&
-        item.Predicted_Quantity < 1000
-    ).length;
+      const mediumDemandCount = forecastSummary.filter(
+        (item) =>
+          item.Predicted_Quantity >= 50 &&
+          item.Predicted_Quantity < 100
+      ).length;
 
-    const lowDemandCount = forecastSummary.filter(
-      (item) => item.Predicted_Quantity < 300
-    ).length;
+      const lowDemandCount = forecastSummary.filter(
+        (item) => item.Predicted_Quantity < 50
+      ).length;
 
-    const highestDemandProduct = forecastSummary[0];
+      const highestDemandProduct = forecastSummary[0];
+
+
     
     const monthlyForecast = Object.values(
         forecastData.reduce((acc, item) => {
@@ -190,6 +207,7 @@ function AdminDashboard({ onLogout }) {
         ...monthlyForecast.map((item) => item.quantity),
         1
       );
+      const chartMax = 100;
 
     const topProducts = forecastSummary;
 
@@ -293,15 +311,45 @@ orders.forEach((order) => {
 
 const customerData = Array.from(customerMap.values());
 
-const stockPredictions = [
-  { Product_Code: "JF", Product_Name: "JOIN FREE", Restock: 45 },
-  { Product_Code: "SC5", Product_Name: "KASEH SKINCARE 5 IN 1", Restock: 30 },
-  { Product_Code: "MELICA30", Product_Name: "MELICA INTENSIVE NIGHT CREAM 30ML", Restock: 25 },
-  { Product_Code: "A-LOVE", Product_Name: "A-LOVE CLEANSER", Restock: 40 },
-  { Product_Code: "P005", Product_Name: "Product E", Restock: 35 },
-  { Product_Code: "P006", Product_Name: "Product F", Restock: 20 },
-  { Product_Code: "P007", Product_Name: "Product G", Restock: 15 },
-];
+
+const stockPredictions = inventoryData
+  .map((product) => {
+    const productCode = String(product.Product_Code || "")
+      .trim()
+      .toUpperCase();
+
+    const nextMonth = forecastData
+      .filter(
+        (item) =>
+          String(item.Product_Code || "").trim().toUpperCase() ===
+          productCode
+      )
+      .sort((a, b) => a.Date.localeCompare(b.Date))[0];
+
+    if (!nextMonth) return null;
+
+    const predictedDemand = Math.max(
+      0,
+      Math.ceil(Number(nextMonth.Predicted_Quantity) || 0)
+    );
+
+    const availableStock = Number(product.Available_Stock) || 0;
+    const safetyStock = Number(product.Safety_Stock) || 0;
+
+    const restock = Math.max(
+      0,
+      predictedDemand + safetyStock - availableStock
+    );
+
+    return {
+      Product_Code: product.Product_Code,
+      Product_Name: product.Product_Name,
+      Restock: restock,
+    };
+  })
+  .filter((item) => item !== null && item.Restock > 0)
+  .sort((a, b) => b.Restock - a.Restock);
+
 
 const filteredInventory = inventoryData.filter((item) => {
   const keyword = inventorySearch.trim().toLowerCase();
@@ -352,20 +400,32 @@ useEffect(() => {
   };
 
   fetchCustomerSegmentation();
-}, []);
+
+  const interval = setInterval(() => {
+    fetchCustomerSegmentation();
+  }, 10000);
+
+  return () => clearInterval(interval);
+  }, []);
 
 const filteredCustomerSegmentation = customerSegmentation.filter((customer) => {
   const keyword = customerSearch.toLowerCase().trim();
 
-  const matchSearch = String(customer.Customer_ID || "")
+  const matchSearch = String(customer.Customer_Name || "")
     .toLowerCase()
     .includes(keyword);
 
-  const matchSegment =
-    customerSegmentFilter === "All" ||
-    customer.Customer_Segment === customerSegmentFilter;
+  let matchCategory = false;
 
-  return matchSearch && matchSegment;
+  if (customerIssueFilter === "Normal") {
+    matchCategory = customer.Segment === "Normal Customers";
+  } else if (customerIssueFilter === "Anomalies") {
+    matchCategory = customer.Order_Anomalies === true;
+  } else if (customerIssueFilter === "DeliveryIssues") {
+    matchCategory = customer.Order_Delivery_Issues === true;
+  }
+
+  return matchSearch && matchCategory;
 });
 
 useEffect(() => {
@@ -375,7 +435,7 @@ useEffect(() => {
 
     try {
       const response = await fetch(
-        "http://127.0.0.1:5000/anomaly-detection"
+        "http://127.0.0.1:5000/anomaly-detection-v2"
       );
 
       if (!response.ok) {
@@ -385,7 +445,7 @@ useEffect(() => {
       const result = await response.json();
 
       setAnomalyData(result.data || []);
-      setAnomalyTotalTransactions(result.total_transactions || 0);
+      setAnomalyTotalTransactions(result.total_orders || 0);
     } catch (error) {
       console.error("Anomaly Detection API Error:", error);
       setAnomalyError(error.message);
@@ -418,23 +478,21 @@ useEffect(() => {
 }, []);
 
 const anomalyCategoryCounts = {
-  returned: anomalyData.filter(
-    (item) => item.Returned_Flag === "Yes"
+  quantity: anomalyData.filter((item) =>
+    item.Anomaly_Reason?.includes("Unusually high order quantity")
   ).length,
 
-  cancelled: anomalyData.filter(
-    (item) => item.Cancelled_Flag === "Yes"
+  frequency: anomalyData.filter((item) =>
+    item.Anomaly_Reason?.includes("Frequent orders within 7 days")
   ).length,
 
-  delayed: anomalyData.filter(
-    (item) => item.Delayed_Flag === "Yes"
+  combined: anomalyData.filter((item) =>
+    item.Anomaly_Reason?.includes("Unusually high order quantity") &&
+    item.Anomaly_Reason?.includes("Frequent orders within 7 days")
   ).length,
 
-  other: anomalyData.filter(
-    (item) =>
-      item.Returned_Flag !== "Yes" &&
-      item.Cancelled_Flag !== "Yes" &&
-      item.Delayed_Flag !== "Yes"
+  other: anomalyData.filter((item) =>
+    item.Anomaly_Reason === "Unusual order pattern"
   ).length,
 };
 
@@ -479,65 +537,27 @@ return (
         <div>
           <h2 className="brand">OrderAI</h2>
 
+          
           <nav>
-            <a
-              className={activePage === "dashboard" ? "active" : ""}
-              onClick={() => setActivePage("dashboard")}
-            >
-              Dashboard
-            </a>
-
-            <a
-              className={activePage === "orders" ? "active" : ""}
-              onClick={() => setActivePage("orders")}
-            >
-              Order Management
-            </a>
-
-            <a
-              className={activePage === "inventory" ? "active" : ""}
-              onClick={() => setActivePage("inventory")}
-            >
-              Inventory Management
-            </a>
-
-            <a
-                className={activePage === "staff" ? "active" : ""}
-                onClick={() => setActivePage("staff")}
-                >
-                Staff Management
-                </a>
-            <a
-                className={activePage === "risk" ? "active" : ""}
-                onClick={() => setActivePage("risk")}
-                >
-                Operational Risk
-                </a>
-            <a
-                className={activePage === "forecast" ? "active" : ""}
-                onClick={() => setActivePage("forecast")}
-                >
-                Demand Forecasting
-                </a>
-            <a
-                className={activePage === "customer" ? "active" : ""}
-                onClick={() => setActivePage("customer")}
-                >
-                Customer Analytics
-                </a>
-            <a
-                className={activePage === "anomaly" ? "active" : ""}
-                onClick={() => setActivePage("anomaly")}
-                >
-                Anomaly Detection
-                </a>
-            <a
-                className={activePage === "reports" ? "active" : ""}
-                onClick={() => setActivePage("reports")}
-                >
-                Reports
-                </a>
+            {[
+              ["dashboard", "Dashboard"],
+              ["orders", "Order Management"],
+              ["inventory", "Inventory Management"],
+              ["forecast", "Demand Forecasting"],
+              ["customer", "Customer Analytics"],
+              ["anomaly", "Anomaly Detection"],
+              ["risk", "Operational Risk"],
+            ].map(([page, label]) => (
+              <a
+                key={page}
+                className={activePage === page ? "active" : ""}
+                onClick={() => setActivePage(page)}
+              >
+                {label}
+              </a>
+            ))}
           </nav>
+
         </div>
 
         <button className="logout-btn" onClick={onLogout}>
@@ -1146,7 +1166,13 @@ return (
                 </div>
 
                 <p style={{ color: "#777", marginBottom: "20px" }}>
-                  Recommended stock replenishment for November 2026
+                  Recommended stock replenishment for{" "}
+                    {forecastStart
+                      ? new Date(`${forecastStart}T00:00:00`).toLocaleDateString(
+                          "en-US",
+                          { month: "long", year: "numeric" }
+                        )
+                      : "the next forecast month"}
                 </p>
 
                 <div className="inventory-stock-list">
@@ -1360,293 +1386,7 @@ return (
           </>
         )}
 
-        {/* =========================
-            STAFF MANAGEMENT
-        ========================== */}
-
-        {activePage === "staff" && (
-        <>
-            <div className="topbar">
-            <div>
-                <h1>Staff Management</h1>
-                <p>
-                Manage system users, staff roles and account status
-                </p>
-            </div>
-
-            <div className="admin-profile">
-                <div className="profile-circle">
-                A
-                </div>
-
-                <div>
-                <strong>Admin</strong>
-                <p>admin001</p>
-                </div>
-            </div>
-            </div>
-
-
-            {/* STAFF SUMMARY */}
-
-            <div className="staff-summary-grid">
-
-            <div className="staff-summary-card">
-                <p>Total Staff</p>
-                <h2>18</h2>
-                <span className="normal">
-                Registered users
-                </span>
-            </div>
-
-            <div className="staff-summary-card">
-                <p>Operators</p>
-                <h2>8</h2>
-                <span className="normal">
-                Order operations
-                </span>
-            </div>
-
-            <div className="staff-summary-card">
-                <p>QC & QA</p>
-                <h2>6</h2>
-                <span className="normal">
-                Quality team
-                </span>
-            </div>
-
-            <div className="staff-summary-card">
-                <p>Inactive Accounts</p>
-                <h2>2</h2>
-                <span className="danger">
-                Account attention
-                </span>
-            </div>
-
-            </div>
-
-
-            {/* STAFF TABLE */}
-
-            <div className="panel">
-
-            <div className="staff-page-header">
-
-                <div>
-                <h3>Staff Accounts</h3>
-
-                <p className="staff-subtitle">
-                    View and manage staff access to the system
-                </p>
-                </div>
-
-                <button className="add-staff-btn">
-                + Add Staff
-                </button>
-
-            </div>
-
-
-            <div className="staff-filters">
-
-                <input
-                type="text"
-                placeholder="Search Staff ID or Name..."
-                />
-
-                <select>
-                <option>All Roles</option>
-                <option>Operator</option>
-                <option>QC</option>
-                <option>QA</option>
-                <option>Management</option>
-                </select>
-
-                <select>
-                <option>All Status</option>
-                <option>Active</option>
-                <option>Inactive</option>
-                </select>
-
-            </div>
-
-
-            <div className="bottom-panel">
-
-                <table>
-
-                <thead>
-                    <tr>
-                    <th>Staff ID</th>
-                    <th>Name</th>
-                    <th>Role</th>
-                    <th>Email</th>
-                    <th>Status</th>
-                    <th>Last Login</th>
-                    <th>Action</th>
-                    </tr>
-                </thead>
-
-                <tbody>
-
-                    <tr>
-                    <td>STF001</td>
-                    <td>Nur Aisyah</td>
-                    <td>
-                        <span className="role-badge operator-role">
-                        Operator
-                        </span>
-                    </td>
-                    <td>aisyah@orderai.com</td>
-
-                    <td>
-                        <span className="status green">
-                        Active
-                        </span>
-                    </td>
-
-                    <td>
-                        25/09/2026
-                        <br />
-                        08:10 AM
-                    </td>
-
-                    <td>
-                        <button className="table-action-btn">
-                        View
-                        </button>
-                    </td>
-                    </tr>
-
-
-                    <tr>
-                    <td>STF002</td>
-                    <td>Amir Hakim</td>
-                    <td>
-                        <span className="role-badge qc-role">
-                        QC
-                        </span>
-                    </td>
-                    <td>amir@orderai.com</td>
-
-                    <td>
-                        <span className="status green">
-                        Active
-                        </span>
-                    </td>
-
-                    <td>
-                        25/09/2026
-                        <br />
-                        08:25 AM
-                    </td>
-
-                    <td>
-                        <button className="table-action-btn">
-                        View
-                        </button>
-                    </td>
-                    </tr>
-
-
-                    <tr>
-                    <td>STF003</td>
-                    <td>Siti Hana</td>
-                    <td>
-                        <span className="role-badge qa-role">
-                        QA
-                        </span>
-                    </td>
-                    <td>hana@orderai.com</td>
-
-                    <td>
-                        <span className="status green">
-                        Active
-                        </span>
-                    </td>
-
-                    <td>
-                        25/09/2026
-                        <br />
-                        08:40 AM
-                    </td>
-
-                    <td>
-                        <button className="table-action-btn">
-                        View
-                        </button>
-                    </td>
-                    </tr>
-
-
-                    <tr>
-                    <td>STF004</td>
-                    <td>Farid Zain</td>
-                    <td>
-                        <span className="role-badge management-role">
-                        Management
-                        </span>
-                    </td>
-                    <td>farid@orderai.com</td>
-
-                    <td>
-                        <span className="status green">
-                        Active
-                        </span>
-                    </td>
-
-                    <td>
-                        24/09/2026
-                        <br />
-                        04:15 PM
-                    </td>
-
-                    <td>
-                        <button className="table-action-btn">
-                        View
-                        </button>
-                    </td>
-                    </tr>
-
-
-                    <tr>
-                    <td>STF005</td>
-                    <td>Nadia Karim</td>
-                    <td>
-                        <span className="role-badge operator-role">
-                        Operator
-                        </span>
-                    </td>
-                    <td>nadia@orderai.com</td>
-
-                    <td>
-                        <span className="status red">
-                        Inactive
-                        </span>
-                    </td>
-
-                    <td>
-                        18/09/2026
-                        <br />
-                        11:20 AM
-                    </td>
-
-                    <td>
-                        <button className="table-action-btn">
-                        View
-                        </button>
-                    </td>
-                    </tr>
-
-                </tbody>
-
-                </table>
-
-            </div>
-
-            </div>
-        </>
-        )}
+    
 
         {/* =========================
             OPERATIONAL RISK
@@ -1951,9 +1691,6 @@ return (
             <div className="topbar">
             <div>
                 <h1>Demand Forecasting</h1>
-                <p>
-                Monitor predicted product demand based on historical order trends
-                </p>
             </div>
 
             <div className="admin-profile">
@@ -1969,113 +1706,185 @@ return (
 
             {/* FORECAST SUMMARY */}
 
+            <div className="forecast-filter-bar">
+              <div className="forecast-filter-item">
+                <span>Forecast Period</span>
+
+                <select
+                  value={forecastMonths}
+                  onChange={(e) =>
+                    setForecastMonths(Number(e.target.value))
+                  }
+                  className="forecast-period-select"
+                >
+                  <option value={1}>1 Month</option>
+                  <option value={3}>3 Months</option>
+                  <option value={6}>6 Months</option>
+                  <option value={12}>12 Months</option>
+                </select>
+              </div>
+
+              <span className="forecast-date-range">
+                {forecastLoading
+                  ? "Loading..."
+                  : forecastStart && forecastEnd
+                  ? `${forecastStart} - ${forecastEnd}`
+                  : ""}
+              </span>
+            </div>
+
             <div className="forecast-summary-grid">
 
               <div className="forecast-summary-card">
-                <p>Forecast Period</p>
-
-                <div className="forecast-period-row">
-                  <h2>{forecastMonths} Months</h2>
-
-                  <select
-                    value={forecastMonths}
-                    onChange={(e) =>
-                      setForecastMonths(Number(e.target.value))
-                    }
-                    className="forecast-period-select"
-                  >
-                    <option value={1}>1 Month</option>
-                    <option value={3}>3 Months</option>
-                    <option value={6}>6 Months</option>
-                    <option value={12}>12 Months</option>
-                  </select>
-                </div>
-
-                <span className={forecastLoading ? "forecast-loading" : "normal"}>
-                  {forecastLoading
-                    ? "Loading forecast..."
-                    : forecastStart && forecastEnd
-                    ? `${forecastStart} - ${forecastEnd}`
-                    : ""}
-                </span>
+                <p>Total Products</p>
+                <h2>{forecastSummary.length}</h2>
+                <span className="normal">Forecasted products</span>
               </div>
-
 
               <div className="forecast-summary-card">
                 <p>High Demand Products</p>
                 <h2>{highDemandCount}</h2>
-                <span className="danger">
-                  Predicted ≥ 1,000 units
-                </span>
+                <span className="danger">≥ 100 units</span>
               </div>
-
 
               <div className="forecast-summary-card">
                 <p>Medium Demand Products</p>
                 <h2>{mediumDemandCount}</h2>
-                <span className="normal">
-                  Predicted 300 - 999 units
-                </span>
+                <span className="normal">50 - 99 units</span>
               </div>
-
 
               <div className="forecast-summary-card">
                 <p>Low Demand Products</p>
                 <h2>{lowDemandCount}</h2>
-                <span className="warning">
-                  Predicted below 300 units
-                </span>
+                <span className="warning">Below 50 units</span>
               </div>
 
             </div>
+
 
             
             {/* FORECAST CHART + INSIGHTS */}
 
             <div className="dashboard-grid">
 
+              
               <div className="panel">
-                <h3>Predicted Demand Trend</h3>
+                <div className="forecast-chart-header">
+                  <h3>Predicted Demand Trend</h3>
 
-                <p className="forecast-chart-subtitle">
-                  {forecastStart && forecastEnd
-                    ? `Total predicted product demand from ${formatForecastDate(forecastStart)} to ${formatForecastDate(forecastEnd)}`
-                    : "Total predicted product demand by month"}
-                </p>
+                  <select
+                    className="forecast-product-select"
+                    value={selectedForecastProduct}
+                    onChange={(e) => setSelectedForecastProduct(e.target.value)}
+                  >
+                    <option value="all">All Products</option>
 
-                <div className="forecast-chart">
-                  {monthlyForecast.map((item) => {
-                    const qty = item.quantity;
-                    const height = (qty / maxMonthlyDemand) * 100;
-
-                    const label = new Date(
-                      `${item.date}T00:00:00`
-                    ).toLocaleDateString("en-US", {
-                      month: "short",
-                      year: "numeric",
-                    });
-
-                    return (
-                      <div
-                        key={item.date}
-                        style={{
-                          height: `${Math.max(height, 5)}%`,
-                        }}
-                        title={`${label}: ${Math.round(qty)} units`}
-                      >
-                        <span>{label}</span>
-                      </div>
-                    );
-                  })}
+                    {[...new Set(forecastData.map((item) => item.Product_Code))]
+                      .sort()
+                      .map((code) => (
+                        <option key={code} value={code}>
+                          {code}
+                        </option>
+                      ))}
+                  </select>
                 </div>
+
+                
+                <div className="forecast-chart-new">
+                  {forecastData.length > 0 ? (
+                    <ResponsiveContainer width="100%" height={300}>
+                      <ScatterChart margin={{ top: 20, right: 20, bottom: 15, left: 0 }}>
+                        <CartesianGrid stroke="#f3dbe7" strokeDasharray="3 3" />
+
+                        <XAxis
+                          type="number"
+                          dataKey="monthIndex"
+                          domain={[-0.3, monthlyForecast.length - 0.7]}
+                          ticks={monthlyForecast.map((_, i) => i)}
+                          tickFormatter={(value) => {
+                            const item = monthlyForecast[value];
+                            if (!item) return "";
+                            return new Date(`${item.date}T00:00:00`)
+                              .toLocaleDateString("en-US", {
+                                month: "short",
+                                year: "numeric",
+                              });
+                          }}
+                          tick={{ fontSize: 11 }}
+                          allowDecimals={false}
+                        />
+
+                        <YAxis
+                          type="number"
+                          dataKey="quantity"
+                          domain={[0, 100]}
+                          ticks={[0, 25, 50, 75, 100]}
+                          tick={{ fontSize: 11 }}
+                        />
+
+                        <Tooltip
+                          cursor={{ strokeDasharray: "3 3" }}
+                          content={({ active, payload }) => {
+                            if (!active || !payload?.length) return null;
+
+                            const item = payload[0].payload;
+
+                            return (
+                              <div style={{
+                                background: "#fff",
+                                padding: "10px 14px",
+                                border: "1px solid #f4c6dc",
+                                borderRadius: 8,
+                                fontSize: 12,
+                              }}>
+                                <strong>{item.product}</strong>
+                                <div>{item.month}</div>
+                                <div>{item.quantity.toFixed(2)} units</div>
+                              </div>
+                            );
+                          }}
+                        />
+
+                        <Scatter
+                          name="Predicted Demand"
+                          data={forecastData
+                            .filter(
+                              (item) =>
+                                selectedForecastProduct === "all" ||
+                                item.Product_Code === selectedForecastProduct
+                            )
+                            .map((item) => {
+                              const index = monthlyForecast.findIndex(
+                                (month) => month.date === item.Date
+                              );
+
+                              return {
+                                monthIndex: index,
+                                month: item.Month,
+                                product: item.Product_Code,
+                                quantity: Number(item.Predicted_Quantity) || 0,
+                              };
+                            })
+                            .filter((item) => item.monthIndex >= 0)}
+                          fill="#d92b83"
+                          line={false}
+                        />
+
+                      </ScatterChart>
+                    </ResponsiveContainer>
+                  ) : (
+                    <p>{forecastLoading ? "Loading..." : "No forecast data available."}</p>
+                  )}
+                </div>
+
               </div>
 
 
               <div className="panel">
-                <h3>Forecast Insights</h3>
+                <h3>Key Findings</h3>
 
                 <div className="alert danger-alert">
-                  <strong>Highest Demand Product</strong>
+                  <strong>Highest Demand</strong>
 
                   <p>
                     {highestDemandProduct
@@ -2088,7 +1897,7 @@ return (
 
 
                 <div className="alert warning-alert">
-                  <strong>Stock Preparation</strong>
+                  <strong>Stock Planning</strong>
 
                   <p>
                     {highestDemandProduct
@@ -2099,7 +1908,7 @@ return (
 
 
                 <div className="alert success-alert">
-                  <strong>Demand Monitoring</strong>
+                  <strong>Demand Overview</strong>
 
                   <p>
                     {highDemandCount} products are classified as high demand,
@@ -2120,14 +1929,6 @@ return (
               <div className="forecast-page-header">
                 <div>
                   <h3>Product Demand Forecast</h3>
-
-                  <p className="forecast-subtitle">
-                    {forecastStart && forecastEnd
-                      ? `Predicted demand for each product from ${formatForecastDate(
-                          forecastStart
-                        )} to ${formatForecastDate(forecastEnd)}`
-                      : "Predicted product demand forecast"}
-                  </p>
                 </div>
               </div>
 
@@ -2263,19 +2064,15 @@ return (
             </div>
 
             <div className="customer-summary-card">
-                <p>High Value Customers</p>
-                <h2>{customerSegmentCounts["High-Value Active Customers"] || 0}</h2>
-                <span className="normal">
-                Frequent buyers
-                </span>
+                <p>Customers Requiring Attention</p>
+                <h2>{customerSegmentCounts["Customers Requiring Attention"] || 0}</h2>
+                <span className="danger">Requires monitoring</span>
             </div>
 
             <div className="customer-summary-card">
-                <p>Regular Customers</p>
-                <h2>{customerSegmentCounts["Regular Customers"] || 0}</h2>
-                <span className="normal">
-                Stable purchase activity
-                </span>
+                <p>Normal Customers</p>
+                <h2>{customerSegmentCounts["Normal Customers"] || 0}</h2>
+                <span className="normal">No recurring issues detected</span>
             </div>
 
             <div className="customer-summary-card">
@@ -2297,29 +2094,83 @@ return (
                 <h3>Customer Segments</h3>
 
                 <div className="customer-segment-list">
-
-                <div className="customer-segment-item">
+                  <div
+                    className="customer-segment-item"
+                    onClick={() =>
+                      setCustomerIssueFilter(
+                        customerIssueFilter === "Normal" ? "All" : "Normal"
+                      )
+                    }
+                    style={{ cursor: "pointer" }}
+                  >
                     <div>
-                    <strong>High Value</strong>
-                    <p>Frequent orders with high purchase value</p>
+                      <strong>Normal Customers</strong>
+                      <p>Customers without detected anomalies or recurring delivery issues</p>
+                    </div>
+                    <span className="status green">
+                      {customerSegmentCounts["Normal Customers"] || 0}
+                    </span>
+                  </div>
+
+                  <div
+                    className="customer-segment-item"
+                    onClick={() => setShowAttentionDetails(!showAttentionDetails)}
+                    style={{ cursor: "pointer" }}
+                  >
+                    <div>
+                      <strong>Customers Requiring Attention</strong>
+                      <p>Customers with unusual orders or recurring delivery issues</p>
                     </div>
 
-                    <span className="status green">
-                    {customerSegmentCounts["High-Value Active Customers"] || 0}
+                    <span className="status yellow">
+                      {customerSegmentCounts["Customers Requiring Attention"] || 0}
                     </span>
-                </div>
+                  </div>
 
+                  {showAttentionDetails && (
+                    <div style={{ padding: "12px 20px", background: "#fff5fa", borderRadius: "10px" }}>
+                      <div
+                        className="customer-segment-item"
+                        onClick={() =>
+                          setCustomerIssueFilter(
+                            customerIssueFilter === "Anomalies" ? "All" : "Anomalies"
+                          )
+                        }
+                        style={{ cursor: "pointer" }}
+                      >
+                        <div>
+                          <strong>Order Anomalies</strong>
+                          <p>Customers with unusual order patterns detected by AI</p>
+                        </div>
+                        <span className="status yellow">
+                          {customerSegmentation.filter(
+                            (customer) => customer.Order_Anomalies === true
+                          ).length}
+                        </span>
+                      </div>
 
-                <div className="customer-segment-item">
-                    <div>
-                    <strong>Regular</strong>
-                    <p>Consistent purchasing behaviour</p>
+                      <div
+                        className="customer-segment-item"
+                        onClick={() =>
+                          setCustomerIssueFilter(
+                            customerIssueFilter === "DeliveryIssues" ? "All" : "DeliveryIssues"
+                          )
+                        }
+                        style={{ cursor: "pointer" }}
+                      >
+                        <div>
+                          <strong>Order & Delivery Issues</strong>
+                          <p>Customers with two or more problematic orders</p>
+                        </div>
+                        <span className="status red">
+                          {customerSegmentation.filter(
+                            (customer) => customer.Order_Delivery_Issues === true
+                          ).length}
+                        </span>
+                      </div>
                     </div>
+                  )}
 
-                    <span className="status green">
-                    {customerSegmentCounts["Regular Customers"] || 0}
-                    </span>
-                </div>
                 </div>
             </div>
 
@@ -2328,29 +2179,30 @@ return (
               <h3>Customer Insights</h3>
 
               <div className="alert success-alert">
-                <strong>High-Value Customer Group</strong>
+                <strong>Normal Customers</strong>
                 <p>
-                  {customerSegmentCounts["High-Value Active Customers"] || 0} customers
-                  are classified as High-Value Active Customers by the AI model.
+                  {customerSegmentCounts["Normal Customers"] || 0} customers
+                  have no detected order anomalies or recurring delivery issues.
                 </p>
               </div>
 
               <div className="alert warning-alert">
-                <strong>Regular Customer Group</strong>
+                <strong>Unusual Order Patterns</strong>
                 <p>
-                  {customerSegmentCounts["Regular Customers"] || 0} customers
-                  are classified as Regular Customers by the AI model.
+                  {customerSegmentation.filter(
+                    (customer) => customer.Order_Anomalies === true
+                  ).length} customers have unusual order patterns
+                  identified through AI anomaly detection.
                 </p>
               </div>
 
               <div className="alert danger-alert">
-                <strong>Customer Purchase Activity</strong>
+                <strong>Recurring Order & Delivery Issues</strong>
                 <p>
-                  {customerSegmentation.reduce(
-                    (sum, customer) => sum + Number(customer.Total_Orders || 0),
-                    0
-                  ).toLocaleString()} historical orders are represented
-                  in the customer segmentation dataset.
+                  {customerSegmentation.filter(
+                    (customer) => customer.Order_Delivery_Issues === true
+                  ).length} customers have experienced two or more
+                  problematic orders and require monitoring.
                 </p>
               </div>
             </div>
@@ -2377,7 +2229,7 @@ return (
 
                 <input
                 type="text"
-                placeholder="Search Customer ID..."
+                placeholder="Search Customer Name..."
                 value={customerSearch}
                 onChange={(e) => setCustomerSearch(e.target.value)}
                 />
@@ -2387,9 +2239,9 @@ return (
                   onChange={(e) => setCustomerSegmentFilter(e.target.value)}
                 >
                   <option value="All">All Segments</option>
-                  <option value="Regular Customers">Regular Customers</option>
-                  <option value="High-Value Active Customers">
-                    High-Value Active Customers
+                  <option value="Normal Customers">Normal Customers</option>
+                  <option value="Customers Requiring Attention">
+                    Customers Requiring Attention
                   </option>
                 </select>
 
@@ -2402,13 +2254,11 @@ return (
 
                 <thead>
                   <tr>
-                    <th>Customer ID</th>
-                    <th>AI Segment</th>
+                    <th>Customer Name</th>
+                    <th>Segment</th>
                     <th>Total Orders</th>
-                    <th>Total Spent (RM)</th>
-                    <th>Cancelled</th>
-                    <th>Returned</th>
-                    <th>QC Issues</th>
+                    <th>Anomaly Orders</th>
+                    <th>Delivery Issue Orders</th>
                   </tr>
                 </thead>
 
@@ -2416,18 +2266,18 @@ return (
                 <tbody>
                   {filteredCustomerSegmentation.length === 0 ? (
                     <tr>
-                      <td colSpan="7">No customer segmentation data available.</td>
+                      <td colSpan="5">
+                        No customer segmentation data available.
+                      </td>
                     </tr>
                   ) : (
                     filteredCustomerSegmentation.map((customer, index) => (
-                      <tr key={`${customer.Customer_ID}-${index}`}>
-                        <td>{customer.Customer_ID}</td>
-                        <td>{customer.Customer_Segment}</td>
+                      <tr key={`${customer.Customer_Key}-${index}`}>
+                        <td>{customer.Customer_Name}</td>
+                        <td>{customer.Segment}</td>
                         <td>{customer.Total_Orders}</td>
-                        <td>{Number(customer.Total_Spent || 0).toFixed(2)}</td>
-                        <td>{customer.Cancelled_Orders}</td>
-                        <td>{customer.Returned_Orders}</td>
-                        <td>{customer.QC_Issue_Orders}</td>
+                        <td>{customer.Anomaly_Orders}</td>
+                        <td>{customer.Issue_Orders}</td>
                       </tr>
                     ))
                   )}
@@ -2471,12 +2321,12 @@ return (
             <div className="anomaly-summary-grid">
 
             <div className="anomaly-summary-card">
-                <p>Total Transactions</p>
+                <p>Total Orders</p>
                 <h2>
                   {anomalyLoading ? "..." : anomalyTotalTransactions.toLocaleString()}
                 </h2>
                 <span className="normal">
-                  Historical records analyzed by AI
+                  Orders monitored
                 </span>
             </div>
 
@@ -2514,51 +2364,49 @@ return (
             <div className="panel">
                 <h3>Anomaly Categories</h3>
 
-                <div className="anomaly-category-list">
+                
+              <div className="anomaly-category-list">
 
                 <div className="anomaly-category-item">
                   <div>
-                    <strong>Returned Orders</strong>
-                    <p>Anomalous records involving returned orders</p>
+                    <strong>High Order Quantity</strong>
+                    <p>Orders with unusually large quantities</p>
                   </div>
                   <span className="status red">
-                    {anomalyCategoryCounts.returned} Detected
+                    {anomalyCategoryCounts.quantity} Detected
                   </span>
                 </div>
 
                 <div className="anomaly-category-item">
                   <div>
-                    <strong>Cancelled Orders</strong>
-                    <p>Anomalous records involving cancelled orders</p>
+                    <strong>Frequent Orders</strong>
+                    <p>Customers placing frequent orders within 7 days</p>
                   </div>
                   <span className="status yellow">
-                    {anomalyCategoryCounts.cancelled} Detected
+                    {anomalyCategoryCounts.frequency} Detected
                   </span>
                 </div>
 
                 <div className="anomaly-category-item">
                   <div>
-                    <strong>Delayed Orders</strong>
-                    <p>Anomalous records involving delayed orders</p>
-                  </div>
-                  <span className="status yellow">
-                    {anomalyCategoryCounts.delayed} Detected
-                  </span>
-                </div>
-
-                <div className="anomaly-category-item">
-                  <div>
-                    <strong>Other Anomalous Records</strong>
-                    <p>Anomalies without returned, cancelled or delayed flags</p>
+                    <strong>Combined Patterns</strong>
+                    <p>Orders with both high quantity and frequent ordering</p>
                   </div>
                   <span className="status red">
+                    {anomalyCategoryCounts.combined} Detected
+                  </span>
+                </div>
+
+                <div className="anomaly-category-item">
+                  <div>
+                    <strong>Other Anomalies</strong>
+                    <p>Unusual ordering patterns detected by AI</p>
+                  </div>
+                  <span className="status yellow">
                     {anomalyCategoryCounts.other} Detected
                   </span>
                 </div>
-
-
-
-                </div>
+              </div>
             </div>
 
 
@@ -2575,13 +2423,7 @@ return (
     .slice(0, 3)
     .map((anomaly, index) => {
       const anomalyType =
-        anomaly.Returned_Flag === "Yes"
-          ? "Returned Order"
-          : anomaly.Cancelled_Flag === "Yes"
-          ? "Cancelled Order"
-          : anomaly.Delayed_Flag === "Yes"
-          ? "Delayed Order"
-          : "Other Anomaly";
+        anomaly.Anomaly_Reason || "Unusual order pattern";
 
       return (
         <div
@@ -2705,17 +2547,9 @@ return (
 
                           <td>{anomaly.Order_ID || "-"}</td>
 
-                          <td>{anomaly.Customer_ID || "-"}</td>
+                          <td>{anomaly.Customer_Name || "-"}</td>
 
-                          <td>
-                            {anomaly.Returned_Flag === "Yes"
-                              ? "Returned Order"
-                              : anomaly.Cancelled_Flag === "Yes"
-                              ? "Cancelled Order"
-                              : anomaly.Delayed_Flag === "Yes"
-                              ? "Delayed Order"
-                              : "Other Anomaly"}
-                          </td>
+                          <td>{anomaly.Anomaly_Reason || "Unusual order pattern"}</td>
 
                           <td>
                             {Number(anomaly.Anomaly_Score).toFixed(4)}
@@ -2757,10 +2591,35 @@ return (
 
             </div>
 
+            
             {/* ANOMALY DETAILS MODAL */}
             {selectedAnomaly && (() => {
               const orderId = String(selectedAnomaly.Order_ID || "");
               const status = anomalyReviewStatuses[orderId] || "Detected";
+
+              const reasons = selectedAnomaly.Anomaly_Reason || "";
+              const reasonTags = [];
+
+              if (reasons.includes("Unusually high order quantity")) {
+                reasonTags.push("High Order Quantity");
+              }
+
+              if (reasons.includes("Frequent orders within 7 days")) {
+                reasonTags.push("Frequent Orders");
+              }
+
+              if (reasonTags.length === 0) {
+                reasonTags.push("Unusual Order Pattern");
+              }
+
+              const details = [
+                ["Order ID", selectedAnomaly.Order_ID || "-"],
+                ["Customer", selectedAnomaly.Customer_Name || "-"],
+                ["Quantity", `${selectedAnomaly.Quantity ?? 0} units`],
+                ["Previous 7 Days", `${selectedAnomaly.Order_Frequency_7D ?? 0} orders`],
+                ["Order Date", selectedAnomaly.Order_Date || "-"],
+                ["Anomaly Score", Number(selectedAnomaly.Anomaly_Score).toFixed(4)]
+              ];
 
               return (
                 <div
@@ -2771,45 +2630,72 @@ return (
                     className="anomaly-modal-content"
                     onClick={(e) => e.stopPropagation()}
                   >
+
                     <div className="anomaly-modal-header">
-                      <h3>Anomaly Details</h3>
+                      <div>
+                        <h3>Anomaly Details</h3>
+                        <p>Review flagged order information</p>
+                      </div>
 
                       <button
                         className="anomaly-modal-close"
                         onClick={() => setSelectedAnomaly(null)}
                       >
-                        ✕
+                        ×
                       </button>
                     </div>
 
-                    <div className="anomaly-modal-body">
-                      <p><strong>Order ID:</strong> {selectedAnomaly.Order_ID || "-"}</p>
-                      <p><strong>Customer ID:</strong> {selectedAnomaly.Customer_ID || "-"}</p>
-                      <p><strong>Product:</strong> {selectedAnomaly.Product_Name || "-"}</p>
-                      <p><strong>Quantity:</strong> {selectedAnomaly.Quantity ?? "-"}</p>
-                      <p><strong>Amount:</strong> RM {Number(selectedAnomaly.Amount || 0).toFixed(2)}</p>
-                      <p><strong>Order Date:</strong> {selectedAnomaly.Order_Date || "-"}</p>
-                      <p><strong>Anomaly Score:</strong> {Number(selectedAnomaly.Anomaly_Score).toFixed(4)}</p>
+                    <div className="anomaly-details-grid">
+                      {details.map(([label, value]) => (
+                        <div className="anomaly-detail-item" key={label}>
+                          <span>{label}</span>
+                          <strong>{value}</strong>
+                        </div>
+                      ))}
+                    </div>
 
-                      <p>
-                        <strong>Review Status:</strong>{" "}
-                        <span className={`status ${
-                          status === "Resolved"
-                            ? "green"
-                            : status === "Under Review"
-                            ? "yellow"
-                            : "red"
-                        }`}>
-                          {status}
-                        </span>
-                      </p>
+                    <div className="anomaly-detection-reason">
+                      <span className="anomaly-section-label">
+                        Detection Reason
+                      </span>
+
+                      <div className="anomaly-reason-tags">
+                        {reasonTags.map((reason) => (
+                          <span className="anomaly-reason-tag" key={reason}>
+                            {reason}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="anomaly-review-row">
+                      <span>Review Status</span>
+
+                      <span className={`status ${
+                        status === "Resolved"
+                          ? "green"
+                          : status === "Under Review"
+                          ? "yellow"
+                          : "red"
+                      }`}>
+                        {status}
+                      </span>
                     </div>
 
                     <div className="anomaly-modal-actions">
+                      <button
+                        className="anomaly-btn-close"
+                        onClick={() => setSelectedAnomaly(null)}
+                      >
+                        Close
+                      </button>
+
                       {status === "Detected" && (
                         <button
                           disabled={anomalySaving}
-                          onClick={() => updateAnomalyStatus(selectedAnomaly, "Under Review")}
+                          onClick={() =>
+                            updateAnomalyStatus(selectedAnomaly, "Under Review")
+                          }
                         >
                           Start Review
                         </button>
@@ -2818,23 +2704,21 @@ return (
                       {status === "Under Review" && (
                         <button
                           disabled={anomalySaving}
-                          onClick={() => updateAnomalyStatus(selectedAnomaly, "Resolved")}
+                          onClick={() =>
+                            updateAnomalyStatus(selectedAnomaly, "Resolved")
+                          }
                         >
                           Resolve
                         </button>
                       )}
-
-                      <button onClick={() => setSelectedAnomaly(null)}>
-                        Close
-                      </button>
                     </div>
+
                   </div>
                 </div>
               );
             })()}
-
-        </>
-        )}
+          </>
+          )}
 
         {/* =========================
             REPORTS

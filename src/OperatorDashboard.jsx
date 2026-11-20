@@ -36,7 +36,20 @@ function OperatorDashboard({ onLogout }) {
   const [addStockQty, setAddStockQty] = useState("");
   const [deliverySearch, setDeliverySearch] = useState("");
   const [deliveryStatusFilter, setDeliveryStatusFilter] = useState("All");
+  const [showDeliveryHistory, setShowDeliveryHistory] = useState(false);
+  const [todayDate, setTodayDate] = useState(
+    () => new Date().toLocaleDateString("en-CA")
+  );
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setTodayDate(new Date().toLocaleDateString("en-CA"));
+    }, 60000);
+
+    return () => clearInterval(timer);
+  }, []);
   const [openAlert, setOpenAlert] = useState(null);
+  
 
   useEffect(() => {
   let unsubscribeOrders;
@@ -216,6 +229,45 @@ const filteredDeliveryOrders = deliveryOrders.filter((order) => {
 
   return matchesSearch && matchesStatus;
 });
+
+const getDeliveryDate = (order) => {
+  const dateValue =
+    order.Delivered_At ||
+    order.Delivery_Updated_At;
+
+  if (!dateValue) return null;
+
+  const date = new Date(dateValue);
+
+  if (Number.isNaN(date.getTime())) return null;
+
+  return date.toLocaleDateString("en-CA");
+};
+
+const isDeliveryHistory = (order) => {
+  const completedStatuses = [
+    "Delivered",
+    "Canceled",
+    "Cancelled",
+    "Not Received",
+    "Returned"
+  ];
+
+  const deliveryDate = getDeliveryDate(order);
+
+  return (
+    completedStatuses.includes(order.Delivery_Status) &&
+    deliveryDate !== null &&
+    deliveryDate < todayDate
+  );
+};
+
+const displayedDeliveryOrders = filteredDeliveryOrders.filter(
+  (order) =>
+    showDeliveryHistory
+      ? isDeliveryHistory(order)
+      : !isDeliveryHistory(order)
+);
 
 
 const updateInventoryStock = async (inventoryItem, stockUpdates) => {
@@ -781,6 +833,9 @@ const handleDeliveryStatus = async (order, newStatus) => {
       {
         Delivery_Status: newStatus,
         Delivery_Updated_At: updatedAt,
+        ...(newStatus === "Delivered" && order.Delivery_Status !== "Delivered"
+          ? { Delivered_At: updatedAt }
+          : {}),
       },
       { merge: true }
     );
@@ -1968,9 +2023,22 @@ const handleSendForRecheck = async () => {
                           jsonData.forEach((row, index) => {
                             const existingId = String(row.Order_ID ?? "").trim();
 
+                            
+                            const normalize = (value) =>
+                              String(value ?? "")
+                                .trim()
+                                .replace(/\s+/g, " ")
+                                .toLowerCase();
+
                             const groupKey = existingId
                               ? `EXISTING:${existingId}`
-                              : `AUTO:${index}`;
+                              : `AUTO:${[
+                                  row.Customer_Name,
+                                  row.Order_Date,
+                                  row.Order_Time,
+                                  row.Address
+                                ].map(normalize).join("|")}`;
+
 
                             if (!groupedMap.has(groupKey)) {
                               groupedMap.set(groupKey, {
@@ -1993,6 +2061,21 @@ const handleSendForRecheck = async () => {
                           });
 
                           const groupedOrders = Array.from(groupedMap.values());
+                          console.log("Excel rows:", jsonData.length);
+                          console.log("Grouped orders:", groupedOrders.length);
+                          console.log("Excel rows:", jsonData.length);
+                          console.log("Grouped orders:", groupedOrders.length);
+
+                          const confirmImport = window.confirm(
+                            `Excel Rows: ${jsonData.length}\n` +
+                            `Grouped Orders: ${groupedOrders.length}\n\n` +
+                            `Click OK to import, or Cancel to preview only.`
+                          );
+
+                          if (!confirmImport) {
+                            console.log("Preview only. No orders imported.");
+                            return;
+                          }
 
                           const ordersSnapshot = await getDocs(collection(db, "orders"));
                           let maxOrderNumber = 0;
@@ -3803,17 +3886,31 @@ const handleSendForRecheck = async () => {
 
             {/* DELIVERY TABLE */}
 
-            <div className="operator-panel">
+           <div className="operator-panel">
 
             <div className="operator-section-header">
 
-                <div>
-                <h3>Delivery Orders</h3>
+              <div>
+                <h3>
+                  {showDeliveryHistory ? "Delivery History" : "Delivery Orders"}
+                </h3>
 
                 <p className="operator-section-subtitle">
-                    Track delivery progress and update shipment status
+                  Track delivery progress and update shipment status
                 </p>
-                </div>
+              </div>
+
+              {/* BUTTON HISTORY - LETAK SINI */}
+              <button
+                className="operator-action-btn"
+                onClick={() => {
+                  setShowDeliveryHistory(!showDeliveryHistory);
+                  setDeliveryStatusFilter("All");
+                  setDeliverySearch("");
+                }}
+              >
+                {showDeliveryHistory ? "Back to Deliveries" : "Delivery History"}
+              </button>
 
             </div>
 
@@ -3863,9 +3960,9 @@ const handleSendForRecheck = async () => {
 
 
                 <tbody>
-                 {filteredDeliveryOrders.length > 0 ? (
+                 {displayedDeliveryOrders.length > 0 ? (
                    
-                  [...filteredDeliveryOrders]
+                  [...displayedDeliveryOrders]
                     .sort((a, b) => {
                       const dateA = new Date(
                         `${formatExcelDate(a.Order_Date)} ${a.Order_Time || "00:00"}`
